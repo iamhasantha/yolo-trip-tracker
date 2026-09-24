@@ -1,0 +1,6 @@
+node_modules/
+backend/yolo.db
+backend/yolo.db-journal
+backend/yolo.db-wal
+backend/yolo.db-shm
+frontend/dist/
