@@ -28,4 +28,10 @@ export const api = {
   removeExpense: (code, id) => request(`/trips/${code}/expenses/${id}`, { method: "DELETE" }),
 
   summary: (code) => request(`/trips/${code}/summary`),
+  completion: (code) => request(`/trips/${code}/completion`),
+  voteToComplete: (code, memberId, vote = true) => request(`/trips/${code}/completion/vote`, {
+    method: "PUT",
+    body: JSON.stringify({ memberId, vote }),
+  }),
+  reportUrl: (code) => `${BASE}/trips/${code}/report.pdf`,
 };

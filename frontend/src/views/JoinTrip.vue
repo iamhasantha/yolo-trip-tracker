@@ -41,8 +41,9 @@ async function submit() {
     const trip = await api.getTrip(tripCode);
     const members = await api.listMembers(tripCode);
     const already = members.find((m) => m.name.toLowerCase() === name.value.trim().toLowerCase());
-    if (!already) await api.addMember(tripCode, name.value.trim());
+    const member = already || await api.addMember(tripCode, name.value.trim());
     localStorage.setItem(`yolo:${trip.code}:name`, name.value.trim());
+    localStorage.setItem(`yolo:${trip.code}:memberId`, String(member.id));
     router.push(`/trip/${trip.code}`);
   } catch (e) {
     error.value = e.message;

@@ -5,6 +5,11 @@ amount from each traveler; everyone joins with a **YOLO code** (no accounts,
 no passwords) to log contributions, log expenses, and see a live budget
 breakdown.
 
+Trips are completed by member vote. Each current member can vote once, and the
+trip is automatically locked when at least 50% of members have voted to finish.
+The completed dashboard provides a downloadable A4 PDF with totals, contribution
+and category charts, member settlement figures, and full contribution/expense ledgers.
+
 ## Structure
 
 ```
@@ -55,6 +60,7 @@ another browser/incognito tab and join as a different member to see it update.
 - `contributions` — money a member has paid into the pot
 - `expenses` — money spent from the pot, optionally attributed to whoever
   paid for it, with a category
+- `completion_votes` — one completion vote per trip member
 - `/api/trips/:code/summary` computes the whole breakdown server-side:
   total collected vs. target, total spent, balance, per-member paid/owed
   status, and spend by category — the frontend just renders it.

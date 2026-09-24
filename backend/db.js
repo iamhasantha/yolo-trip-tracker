@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS trips (
   name          TEXT NOT NULL,
   currency      TEXT NOT NULL DEFAULT 'LKR',
   target_amount REAL NOT NULL DEFAULT 0,
-  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  completed_at  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS members (
@@ -51,4 +52,21 @@ CREATE TABLE IF NOT EXISTS expenses (
 CREATE INDEX IF NOT EXISTS idx_members_trip ON members(trip_id);
 CREATE INDEX IF NOT EXISTS idx_contrib_trip ON contributions(trip_id);
 CREATE INDEX IF NOT EXISTS idx_expense_trip ON expenses(trip_id);
+`);
+
+// Lightweight migrations for databases created by earlier versions.
+const tripColumns = new Set(db.prepare("PRAGMA table_info(trips)").all().map((column) => column.name));
+if (!tripColumns.has("completed_at")) {
+  db.exec("ALTER TABLE trips ADD COLUMN completed_at TEXT");
+}
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS completion_votes (
+  trip_id    INTEGER NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+  member_id  INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (trip_id, member_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_completion_votes_trip ON completion_votes(trip_id);
 `);

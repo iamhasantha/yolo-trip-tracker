@@ -1,6 +1,6 @@
 <template>
   <div>
-    <div class="card" style="margin-bottom:1.4em;">
+    <div v-if="!locked" class="card" style="margin-bottom:1.4em;">
       <h3>Record a contribution</h3>
       <p>Log money as it comes in from each member.</p>
       <div v-if="error" class="error-banner">{{ error }}</div>
@@ -35,7 +35,7 @@
           <td class="mono">{{ Number(c.amount).toLocaleString() }}</td>
           <td style="color:var(--ink-soft);">{{ c.note || "—" }}</td>
           <td class="mono" style="color:var(--ink-soft); font-size:0.85rem;">{{ formatDate(c.created_at) }}</td>
-          <td><button class="danger" style="padding:0.3em 0.7em; font-size:0.8rem;" @click="remove(c.id)">Undo</button></td>
+          <td><button v-if="!locked" class="danger" style="padding:0.3em 0.7em; font-size:0.8rem;" @click="remove(c.id)">Undo</button></td>
         </tr>
       </tbody>
     </table>
@@ -46,7 +46,7 @@
 import { ref, reactive, onMounted } from "vue";
 import { api } from "../api.js";
 
-const props = defineProps({ code: String });
+const props = defineProps({ code: String, locked: Boolean });
 const emit = defineEmits(["changed"]);
 
 const members = ref([]);
