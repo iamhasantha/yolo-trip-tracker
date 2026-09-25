@@ -58,6 +58,7 @@ async function submit() {
     const trip = await api.createTrip(form);
     localStorage.setItem(`yolo:${trip.code}:name`, form.creatorName.trim());
     localStorage.setItem(`yolo:${trip.code}:memberId`, String(trip.creatorMemberId));
+    localStorage.setItem(`yolo:${trip.code}:token`, trip.creatorToken);
     router.push(`/trip/${trip.code}?fresh=1`);
   } catch (e) {
     error.value = e.message;

@@ -1,6 +1,6 @@
 <template>
   <div>
-    <div v-if="!locked" class="card" style="margin-bottom:1.4em;">
+    <div v-if="canEdit && !locked" class="card" style="margin-bottom:1.4em;">
       <h3>Log an expense</h3>
       <p>Anything paid out of the shared pot.</p>
       <div v-if="error" class="error-banner">{{ error }}</div>
@@ -46,7 +46,7 @@
           <td style="color:var(--ink-soft);">{{ e.category }}</td>
           <td class="mono">{{ Number(e.amount).toLocaleString() }}</td>
           <td>{{ e.paid_by_name || "Common pot" }}</td>
-          <td><button v-if="!locked" class="danger" style="padding:0.3em 0.7em; font-size:0.8rem;" @click="remove(e.id)">Undo</button></td>
+          <td><button v-if="canEdit && !locked" class="danger" style="padding:0.3em 0.7em; font-size:0.8rem;" @click="remove(e.id)">Undo</button></td>
         </tr>
       </tbody>
     </table>
@@ -57,7 +57,7 @@
 import { ref, reactive, onMounted } from "vue";
 import { api } from "../api.js";
 
-const props = defineProps({ code: String, locked: Boolean });
+const props = defineProps({ code: String, locked: Boolean, canEdit: Boolean });
 const emit = defineEmits(["changed"]);
 
 const members = ref([]);

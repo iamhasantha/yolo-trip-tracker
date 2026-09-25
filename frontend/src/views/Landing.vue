@@ -4,7 +4,7 @@
     <p>
       One person collects a fixed amount from everyone going on the trip.
       YOLO keeps a shared, honest ledger of who's paid in, what's been spent,
-      and what's left — no accounts, no sign-in, just a code.
+      and what's left. Anyone with the code can view; join with your name to make changes.
     </p>
     <div class="choice-grid">
       <div class="card">
