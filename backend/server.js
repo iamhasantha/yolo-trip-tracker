@@ -2,10 +2,10 @@ import express from "express";
 import cors from "cors";
 import path from "path";
 import fs from "fs";
-import { createHash, randomBytes } from "crypto";
+import { createHash, randomBytes, scryptSync, timingSafeEqual } from "crypto";
 import { fileURLToPath } from "url";
 import { customAlphabet } from "nanoid";
-import { db } from "./db.js";
+import { db, DEFAULT_CATEGORIES } from "./db.js";
 import { createTripReport } from "./report.js";
 import {
   audit,
@@ -68,6 +68,59 @@ function issueMemberToken(memberId) {
   db.prepare("INSERT INTO member_sessions (member_id, token_hash) VALUES (?, ?)")
     .run(memberId, createHash("sha256").update(token).digest("hex"));
   return token;
+}
+
+function validPin(pin) {
+  return typeof pin === "string" && /^\d{4}$/.test(pin);
+}
+
+const MAX_CATEGORIES = 20;
+function categoryName(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function listCategories(tripId) {
+  return db.prepare(`
+    SELECT c.id, c.name, c.is_default,
+      (SELECT COUNT(*) FROM expenses e WHERE e.trip_id = c.trip_id AND e.category = c.name COLLATE NOCASE) AS expense_count
+    FROM trip_categories c WHERE c.trip_id = ? ORDER BY c.is_default DESC, c.id
+  `).all(tripId);
+}
+
+function saveMemberPin(memberId, pin) {
+  const salt = randomBytes(16).toString("hex");
+  const pinHash = scryptSync(pin, salt, 64).toString("hex");
+  db.prepare(`
+    INSERT INTO member_pins (member_id, salt, pin_hash) VALUES (?, ?, ?)
+    ON CONFLICT(member_id) DO UPDATE SET
+      salt = excluded.salt, pin_hash = excluded.pin_hash,
+      failed_attempts = 0, locked_until = 0
+  `).run(memberId, salt, pinHash);
+}
+
+function verifyMemberPin(memberId, pin) {
+  const record = db.prepare("SELECT * FROM member_pins WHERE member_id = ?").get(memberId);
+  if (!record) return { ok: false, status: 403, error: "No PIN is set for this member. Set one from a browser where you're already signed in." };
+
+  const now = Date.now();
+  if (record.locked_until > now) {
+    return { ok: false, status: 429, error: "Too many PIN attempts. Try again in 15 minutes." };
+  }
+
+  const submitted = scryptSync(String(pin ?? ""), record.salt, 64);
+  const correct = timingSafeEqual(submitted, Buffer.from(record.pin_hash, "hex"));
+  if (!correct) {
+    const attempts = record.locked_until ? 1 : record.failed_attempts + 1;
+    const lockedUntil = attempts >= 5 ? now + 15 * 60 * 1000 : 0;
+    db.prepare("UPDATE member_pins SET failed_attempts = ?, locked_until = ? WHERE member_id = ?")
+      .run(attempts, lockedUntil, memberId);
+    return { ok: false, status: lockedUntil ? 429 : 403,
+      error: lockedUntil ? "Too many PIN attempts. Try again in 15 minutes." : "Name or PIN is incorrect." };
+  }
+
+  db.prepare("UPDATE member_pins SET failed_attempts = 0, locked_until = 0 WHERE member_id = ?")
+    .run(memberId);
+  return { ok: true };
 }
 
 function completionStatus(trip) {
@@ -133,9 +186,22 @@ function getSummary(trip) {
 // ---------- Trips ----------
 
 app.post("/api/trips", (req, res) => {
-  const { name, currency, targetAmount, creatorName } = req.body;
+  const { name, currency, targetAmount, creatorName, creatorPin, categories = [] } = req.body;
   if (!name || !String(name).trim()) return res.status(400).json({ error: "Trip name is required." });
   if (!creatorName || !String(creatorName).trim()) return res.status(400).json({ error: "Your name is required." });
+  if (!validPin(creatorPin)) return res.status(400).json({ error: "Use a 4-digit member PIN." });
+  if (!Array.isArray(categories)) return res.status(400).json({ error: "Categories must be a list." });
+  const customCategories = categories.map(categoryName);
+  if (customCategories.some((value) => !value || value.length > 40)) {
+    return res.status(400).json({ error: "Category names must be 1–40 characters." });
+  }
+  const categoryKeys = [...DEFAULT_CATEGORIES, ...customCategories].map((value) => value.toLowerCase());
+  if (new Set(categoryKeys).size !== categoryKeys.length) {
+    return res.status(409).json({ error: "Category names must be unique." });
+  }
+  if (categoryKeys.length > MAX_CATEGORIES) {
+    return res.status(400).json({ error: "A trip can have up to 20 categories, including the defaults." });
+  }
 
   let code;
   do { code = genCode(); } while (tripByCode(code));
@@ -143,18 +209,58 @@ app.post("/api/trips", (req, res) => {
   const insertTrip = db.prepare(
     "INSERT INTO trips (code, name, currency, target_amount) VALUES (?, ?, ?, ?)"
   );
-  const info = insertTrip.run(code, name.trim(), currency || "LKR", Number(targetAmount) || 0);
-
-  const memberInfo = db.prepare("INSERT INTO members (trip_id, name) VALUES (?, ?)").run(info.lastInsertRowid, creatorName.trim());
-  const creatorToken = issueMemberToken(memberInfo.lastInsertRowid);
+  const created = db.transaction(() => {
+    const info = insertTrip.run(code, name.trim(), currency || "LKR", Number(targetAmount) || 0);
+    const insertCategory = db.prepare("INSERT INTO trip_categories (trip_id, name, is_default) VALUES (?, ?, ?)");
+    for (const category of DEFAULT_CATEGORIES) insertCategory.run(info.lastInsertRowid, category, 1);
+    for (const category of customCategories) insertCategory.run(info.lastInsertRowid, category, 0);
+    const memberInfo = db.prepare("INSERT INTO members (trip_id, name) VALUES (?, ?)").run(info.lastInsertRowid, creatorName.trim());
+    const creatorToken = issueMemberToken(memberInfo.lastInsertRowid);
+    saveMemberPin(memberInfo.lastInsertRowid, creatorPin);
+    return { tripId: Number(info.lastInsertRowid), memberId: Number(memberInfo.lastInsertRowid), creatorToken };
+  })();
 
   domainEventsTotal.inc({ entity: "trip", operation: "created" });
-  audit(req, "trip.created", { tripId: Number(info.lastInsertRowid), creatorMemberId: Number(memberInfo.lastInsertRowid) });
-  res.status(201).json({ ...tripByCode(code), creatorMemberId: Number(memberInfo.lastInsertRowid), creatorToken });
+  audit(req, "trip.created", { tripId: created.tripId, creatorMemberId: created.memberId });
+  res.status(201).json({ ...tripByCode(code), creatorMemberId: created.memberId, creatorToken: created.creatorToken });
 });
 
 app.get("/api/trips/:code", requireTrip, (req, res) => {
   res.json(req.trip);
+});
+
+// ---------- Categories ----------
+
+app.get("/api/trips/:code/categories", requireTrip, (req, res) => {
+  res.json(listCategories(req.trip.id));
+});
+
+app.post("/api/trips/:code/categories", requireTrip, requireActiveTrip, requireMember, (req, res) => {
+  const name = categoryName(req.body?.name);
+  if (!name || name.length > 40) return res.status(400).json({ error: "Category names must be 1–40 characters." });
+  const result = db.prepare(`
+    INSERT OR IGNORE INTO trip_categories (trip_id, name)
+    SELECT ?, ? WHERE (SELECT COUNT(*) FROM trip_categories WHERE trip_id = ?) < ?
+  `).run(req.trip.id, name, req.trip.id, MAX_CATEGORIES);
+  if (!result.changes) {
+    const exists = db.prepare("SELECT 1 FROM trip_categories WHERE trip_id = ? AND name = ?").get(req.trip.id, name);
+    return res.status(409).json({ error: exists ? "That category already exists." : "This trip already has 20 categories." });
+  }
+  audit(req, "category.created", { tripId: req.trip.id, categoryId: Number(result.lastInsertRowid) });
+  res.status(201).json(db.prepare("SELECT * FROM trip_categories WHERE id = ?").get(result.lastInsertRowid));
+});
+
+app.delete("/api/trips/:code/categories/:id", requireTrip, requireActiveTrip, requireMember, (req, res) => {
+  const category = db.prepare("SELECT id, name, is_default FROM trip_categories WHERE id = ? AND trip_id = ?")
+    .get(req.params.id, req.trip.id);
+  if (!category) return res.status(404).json({ error: "Category not found." });
+  if (category.is_default) return res.status(409).json({ error: "Default categories cannot be removed." });
+  const used = db.prepare("SELECT 1 FROM expenses WHERE trip_id = ? AND category = ? COLLATE NOCASE LIMIT 1")
+    .get(req.trip.id, category.name);
+  if (used) return res.status(409).json({ error: "A category used by expenses cannot be removed." });
+  db.prepare("DELETE FROM trip_categories WHERE id = ? AND trip_id = ?").run(category.id, req.trip.id);
+  audit(req, "category.removed", { tripId: req.trip.id, categoryId: category.id });
+  res.status(204).end();
 });
 
 // ---------- Members ----------
@@ -168,18 +274,67 @@ app.get("/api/trips/:code/me", requireTrip, requireMember, (req, res) => {
   res.json(req.member);
 });
 
+app.get("/api/trips/:code/me/access", requireTrip, requireMember, (req, res) => {
+  const hasPin = Boolean(db.prepare("SELECT 1 FROM member_pins WHERE member_id = ?").get(req.member.id));
+  const sessions = db.prepare("SELECT COUNT(*) AS count FROM member_sessions WHERE member_id = ?").get(req.member.id).count;
+  res.json({ hasPin, sessions });
+});
+
+app.put("/api/trips/:code/me/pin", requireTrip, requireMember, (req, res) => {
+  const { pin, currentPin } = req.body || {};
+  if (!validPin(pin)) return res.status(400).json({ error: "Use a 4-digit member PIN." });
+  const existing = db.prepare("SELECT 1 FROM member_pins WHERE member_id = ?").get(req.member.id);
+  if (existing) {
+    const checked = verifyMemberPin(req.member.id, currentPin);
+    if (!checked.ok) return res.status(checked.status).json({ error: checked.error });
+  }
+  saveMemberPin(req.member.id, pin);
+  audit(req, "member.pin_updated", { tripId: req.trip.id, memberId: req.member.id });
+  res.status(204).end();
+});
+
+app.post("/api/trips/:code/me/sessions/reset", requireTrip, requireMember, (req, res) => {
+  const checked = verifyMemberPin(req.member.id, req.body?.pin);
+  if (!checked.ok) return res.status(checked.status).json({ error: checked.error });
+  const token = db.transaction(() => {
+    db.prepare("DELETE FROM member_sessions WHERE member_id = ?").run(req.member.id);
+    return issueMemberToken(req.member.id);
+  })();
+  audit(req, "member.sessions_reset", { tripId: req.trip.id, memberId: req.member.id });
+  res.json({ token });
+});
+
+app.post("/api/trips/:code/login", requireTrip, (req, res) => {
+  const name = String(req.body?.name || "").trim();
+  const pin = req.body?.pin;
+  if (!name || !validPin(pin)) return res.status(400).json({ error: "Enter your name and 4-digit PIN." });
+  const member = db.prepare("SELECT id, name FROM members WHERE trip_id = ? AND name = ? COLLATE NOCASE")
+    .get(req.trip.id, name);
+  if (!member) return res.status(403).json({ error: "Name or PIN is incorrect." });
+  const checked = verifyMemberPin(member.id, pin);
+  if (!checked.ok) return res.status(checked.status).json({ error: checked.error });
+  const token = issueMemberToken(member.id);
+  audit(req, "member.signed_in", { tripId: req.trip.id, memberId: member.id });
+  res.json({ ...member, token });
+});
+
 app.post("/api/trips/:code/members", requireTrip, requireActiveTrip, (req, res) => {
-  const { name } = req.body;
+  const { name, pin } = req.body;
   if (!name || !String(name).trim()) return res.status(400).json({ error: "A name is required." });
   if (String(name).trim().length > 80) return res.status(400).json({ error: "Names can be up to 80 characters." });
+  if (!validPin(pin)) return res.status(400).json({ error: "Use a 4-digit member PIN." });
   const existing = db.prepare("SELECT id FROM members WHERE trip_id = ? AND name = ? COLLATE NOCASE")
     .get(req.trip.id, String(name).trim());
-  if (existing) return res.status(409).json({ error: "That name is already on this trip. Use a different name or return on the device where you joined." });
-  const info = db.prepare("INSERT INTO members (trip_id, name) VALUES (?, ?)").run(req.trip.id, name.trim());
-  const token = issueMemberToken(info.lastInsertRowid);
+  if (existing) return res.status(409).json({ error: "That name is already on this trip. Sign in with your PIN instead." });
+  const joined = db.transaction(() => {
+    const info = db.prepare("INSERT INTO members (trip_id, name) VALUES (?, ?)").run(req.trip.id, name.trim());
+    const token = issueMemberToken(info.lastInsertRowid);
+    saveMemberPin(info.lastInsertRowid, pin);
+    return { memberId: Number(info.lastInsertRowid), token };
+  })();
   domainEventsTotal.inc({ entity: "member", operation: "added" });
-  audit(req, "member.added", { tripId: req.trip.id, memberId: Number(info.lastInsertRowid) });
-  res.status(201).json({ ...db.prepare("SELECT * FROM members WHERE id = ?").get(info.lastInsertRowid), token });
+  audit(req, "member.added", { tripId: req.trip.id, memberId: joined.memberId });
+  res.status(201).json({ ...db.prepare("SELECT * FROM members WHERE id = ?").get(joined.memberId), token: joined.token });
 });
 
 app.delete("/api/trips/:code/members/:id", requireTrip, requireActiveTrip, requireMember, (req, res) => {
@@ -244,13 +399,16 @@ app.post("/api/trips/:code/expenses", requireTrip, requireActiveTrip, requireMem
   if (!description || !amount || Number(amount) <= 0) {
     return res.status(400).json({ error: "A description and a positive amount are required." });
   }
+  const selectedCategory = db.prepare("SELECT name FROM trip_categories WHERE trip_id = ? AND name = ?")
+    .get(req.trip.id, categoryName(category || "General"));
+  if (!selectedCategory) return res.status(400).json({ error: "Choose a category from this trip." });
   if (paidBy) {
     const member = db.prepare("SELECT id FROM members WHERE id = ? AND trip_id = ?").get(paidBy, req.trip.id);
     if (!member) return res.status(404).json({ error: "That member isn't part of this trip." });
   }
   const info = db.prepare(
     "INSERT INTO expenses (trip_id, paid_by, description, category, amount) VALUES (?, ?, ?, ?, ?)"
-  ).run(req.trip.id, paidBy || null, description.trim(), category || "General", Number(amount));
+  ).run(req.trip.id, paidBy || null, description.trim(), selectedCategory.name, Number(amount));
 
   domainEventsTotal.inc({ entity: "expense", operation: "created" });
   audit(req, "expense.created", { tripId: req.trip.id, expenseId: Number(info.lastInsertRowid), paidByMemberId: paidBy ? Number(paidBy) : null });

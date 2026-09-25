@@ -103,6 +103,26 @@ label {
 
 .field { margin-bottom: 1.1em; }
 
+.category-help { margin: 0.2em 0 0.7em; font-size: 0.85rem; }
+.category-chip-list { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 0.8em; }
+.category-chip { display: inline-flex; align-items: center; gap: 5px; padding: 0.25em 0.65em; border: 1px solid var(--line); border-radius: 999px; background: var(--paper-2); font-size: 0.82rem; }
+.category-chip.custom { border-color: var(--stamp-green); background: #E3EDE7; }
+.category-chip button { padding: 0; border: 0; background: transparent; color: var(--ink-soft); font-size: 1.1rem; line-height: 1; }
+.category-chip button:hover { background: transparent; color: var(--danger); }
+.category-add { display: flex; align-items: end; gap: 9px; margin-bottom: 1.2em; }
+.category-add > .field { flex: 1; margin-bottom: 0; }
+.category-add > input { flex: 1; min-width: 0; }
+.category-add > button { flex: 0 0 auto; }
+.category-heading { display: flex; justify-content: space-between; align-items: start; gap: 15px; }
+.category-count { color: var(--stamp-green-dark); font-weight: 700; white-space: nowrap; }
+.category-list { display: grid; gap: 8px; }
+.category-item { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 0.65em 0.8em; border: 1px solid var(--line); background: #FBF8EF; }
+.category-item > div { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; }
+.category-kind { color: var(--ink-soft); font-size: 0.75rem; }
+.category-item small { color: var(--ink-soft); }
+button.category-remove { padding: 0.3em 0.6em; font-size: 0.8rem; }
+.category-limit { font-size: 0.87rem; }
+
 .container {
   max-width: 920px;
   margin: 0 auto;
@@ -128,6 +148,15 @@ label {
 .trip-hero-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px; }
 .trip-created-note { margin: 0.8em 0 0; color: var(--stamp-green-dark); font-weight: 600; }
 .trip-hero .priority-slideshow { margin: 1.2em 0 0; }
+.member-access-panel { max-width: 560px; margin-bottom: 1.3em; }
+.member-access-panel .field { max-width: 260px; }
+.access-reset { margin-top: 1.5em; padding-top: 1.3em; border-top: 1px solid var(--line); }
+.success-banner { padding: 0.8em 1em; border: 1px solid var(--stamp-green); background: #E3EDE7; color: var(--stamp-green-dark); }
+.access-mode { display: flex; gap: 6px; margin: 1.2em 0; }
+.access-mode button { flex: 1; background: transparent; color: var(--ink-soft); border-color: var(--line); }
+.access-mode button:hover, .access-mode button.active { background: #E3EDE7; color: var(--stamp-green-dark); border-color: var(--stamp-green); }
+.settings-page { max-width: 720px; }
+.settings-back { display: inline-block; margin-bottom: 1.2em; }
 
 .stamp-code {
   display: inline-flex;
@@ -176,7 +205,10 @@ label {
   border-bottom: 1px solid var(--line);
   margin-bottom: 1.6em;
   overflow-x: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
+.tabs::-webkit-scrollbar { display: none; }
 .tabs button.tab {
   background: transparent;
   color: var(--ink-soft);
@@ -232,7 +264,12 @@ tr:last-child td { border-bottom: none; }
   padding: 1.1em 0;
   margin-bottom: 2.2em;
 }
-.topbar-inner { display: flex; align-items: baseline; justify-content: space-between; }
+.topbar-inner { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.topbar-actions { display: flex; align-items: center; gap: 18px; }
+.topbar-tagline { color: var(--ink-soft); font-size: 0.85rem; }
+.settings-nav { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 38px; padding: 0.45em 0.65em; border: 1px solid transparent; border-radius: var(--radius); color: var(--ink-soft); font-size: 0.9rem; font-weight: 600; text-decoration: none; white-space: nowrap; }
+.settings-nav:hover, .settings-nav.active { border-color: var(--line); background: var(--paper-2); color: var(--stamp-green-dark); }
+.settings-nav svg { flex: 0 0 auto; }
 .brand { font-family: var(--font-display); font-weight: 700; font-size: 1.4rem; }
 .brand .dot { color: var(--stamp-gold); }
 
@@ -397,4 +434,5 @@ button.note-remove:hover { color: var(--ink); background: transparent; }
   .completion-card { align-items: stretch; flex-direction: column; }
   .completion-actions button, .button-link { width: 100%; text-align: center; }
   .guest-banner { align-items: stretch; flex-direction: column; }
+  .topbar-tagline { display: none; }
 }

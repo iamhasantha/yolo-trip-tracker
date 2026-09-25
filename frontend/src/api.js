@@ -22,10 +22,17 @@ function memberOptions(code, options = {}) {
 export const api = {
   createTrip: (data) => request("/trips", { method: "POST", body: JSON.stringify(data) }),
   getTrip: (code) => request(`/trips/${code}`),
+  listCategories: (code) => request(`/trips/${code}/categories`),
+  addCategory: (code, name) => request(`/trips/${code}/categories`, memberOptions(code, { method: "POST", body: JSON.stringify({ name }) })),
+  removeCategory: (code, id) => request(`/trips/${code}/categories/${id}`, memberOptions(code, { method: "DELETE" })),
   me: (code) => request(`/trips/${code}/me`, memberOptions(code)),
+  accessInfo: (code) => request(`/trips/${code}/me/access`, memberOptions(code)),
+  setPin: (code, data) => request(`/trips/${code}/me/pin`, memberOptions(code, { method: "PUT", body: JSON.stringify(data) })),
+  resetSessions: (code, pin) => request(`/trips/${code}/me/sessions/reset`, memberOptions(code, { method: "POST", body: JSON.stringify({ pin }) })),
+  login: (code, name, pin) => request(`/trips/${code}/login`, { method: "POST", body: JSON.stringify({ name, pin }) }),
 
   listMembers: (code) => request(`/trips/${code}/members`),
-  addMember: (code, name) => request(`/trips/${code}/members`, { method: "POST", body: JSON.stringify({ name }) }),
+  addMember: (code, name, pin) => request(`/trips/${code}/members`, { method: "POST", body: JSON.stringify({ name, pin }) }),
   removeMember: (code, id) => request(`/trips/${code}/members/${id}`, memberOptions(code, { method: "DELETE" })),
 
   listContributions: (code) => request(`/trips/${code}/contributions`),

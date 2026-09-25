@@ -2,10 +2,11 @@
   <div>
     <div v-if="canEdit && !locked" class="card" style="margin-bottom:1.4em;">
       <h3>Add a member</h3>
-      <p>Just a name — no account needed.</p>
+      <p>Set a temporary 4-digit PIN and share it with them. They can change it after signing in.</p>
       <div v-if="error" class="error-banner">{{ error }}</div>
       <form @submit.prevent="add" class="actions-row">
         <input v-model="name" placeholder="Member name" style="max-width:260px;" required />
+        <input v-model="pin" type="password" inputmode="numeric" pattern="[0-9]{4}" minlength="4" maxlength="4" autocomplete="new-password" placeholder="4-digit PIN" aria-label="Temporary 4-digit PIN" style="max-width:180px;" required />
         <button type="submit" :disabled="loading">Add</button>
       </form>
     </div>
@@ -33,6 +34,7 @@ const emit = defineEmits(["changed"]);
 
 const members = ref([]);
 const name = ref("");
+const pin = ref("");
 const loading = ref(false);
 const error = ref("");
 
@@ -44,8 +46,9 @@ async function add() {
   error.value = "";
   loading.value = true;
   try {
-    await api.addMember(props.code, name.value.trim());
+    await api.addMember(props.code, name.value.trim(), pin.value);
     name.value = "";
+    pin.value = "";
     await load();
     emit("changed");
   } catch (e) {
