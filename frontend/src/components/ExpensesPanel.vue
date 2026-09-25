@@ -17,12 +17,7 @@
           <div class="field">
             <label>Category</label>
             <select v-model="form.category">
-              <option>General</option>
-              <option>Transport</option>
-              <option>Food</option>
-              <option>Stay</option>
-              <option>Activities</option>
-              <option>Shopping</option>
+              <option v-for="category in categories" :key="category.id" :value="category.name">{{ category.name }}</option>
             </select>
           </div>
           <div class="field">
@@ -62,13 +57,21 @@ const emit = defineEmits(["changed"]);
 
 const members = ref([]);
 const expenses = ref([]);
+const categories = ref([]);
 const loading = ref(false);
 const error = ref("");
 const form = reactive({ description: "", amount: "", category: "General", paidBy: "" });
 
 async function load() {
-  members.value = await api.listMembers(props.code);
-  expenses.value = await api.listExpenses(props.code);
+  const [memberList, expenseList, categoryList] = await Promise.all([
+    api.listMembers(props.code), api.listExpenses(props.code), api.listCategories(props.code),
+  ]);
+  members.value = memberList;
+  expenses.value = expenseList;
+  categories.value = categoryList;
+  if (!categoryList.some((category) => category.name === form.category)) {
+    form.category = categoryList[0]?.name || "";
+  }
 }
 
 async function add() {

@@ -1,7 +1,12 @@
 <template>
   <div class="container" style="max-width:480px;">
-    <h2>Join a trip</h2>
-    <p>Enter a YOLO code to read as a guest. Add your name and join to post notes or make changes.</p>
+    <h2>{{ mode === "join" ? "Join a trip" : "Sign in to a trip" }}</h2>
+    <p>Use a YOLO code to view as a guest, join as a new member, or sign in as a member from another browser.</p>
+
+    <div class="access-mode" role="group" aria-label="Member access">
+      <button type="button" :class="{ active: mode === 'join' }" @click="mode = 'join'">New member</button>
+      <button type="button" :class="{ active: mode === 'login' }" @click="mode = 'login'">Existing member</button>
+    </div>
 
     <div v-if="error" class="error-banner">{{ error }}</div>
 
@@ -14,8 +19,12 @@
         <label for="name">Your name</label>
         <input id="name" v-model="name" placeholder="How the group will see you" required />
       </div>
+      <div class="field">
+        <label for="member-pin">{{ mode === "join" ? "Create a 4-digit PIN" : "Your 4-digit PIN" }}</label>
+        <input id="member-pin" v-model="pin" type="password" inputmode="numeric" pattern="[0-9]{4}" minlength="4" maxlength="4" :autocomplete="mode === 'join' ? 'new-password' : 'current-password'" placeholder="4 digits" required />
+      </div>
       <div class="actions-row">
-        <button type="submit" :disabled="loading">{{ loading ? "Joining…" : "Join trip" }}</button>
+        <button type="submit" :disabled="loading">{{ loading ? "Please wait…" : mode === "join" ? "Join trip" : "Sign in" }}</button>
         <button type="button" class="ghost" :disabled="loading" @click="viewGuest">View as guest</button>
         <button type="button" class="ghost" @click="$router.push('/')">Back</button>
       </div>
@@ -32,6 +41,8 @@ const router = useRouter();
 const route = useRoute();
 const code = ref(String(route.query.code || ""));
 const name = ref("");
+const pin = ref("");
+const mode = ref(route.query.mode === "login" ? "login" : "join");
 const loading = ref(false);
 const error = ref("");
 
@@ -41,8 +52,10 @@ async function submit() {
   const tripCode = code.value.trim().toUpperCase();
   try {
     const trip = await api.getTrip(tripCode);
-    const member = await api.addMember(tripCode, name.value.trim());
-    localStorage.setItem(`yolo:${trip.code}:name`, name.value.trim());
+    const member = mode.value === "join"
+      ? await api.addMember(tripCode, name.value.trim(), pin.value)
+      : await api.login(tripCode, name.value.trim(), pin.value);
+    localStorage.setItem(`yolo:${trip.code}:name`, member.name);
     localStorage.setItem(`yolo:${trip.code}:memberId`, String(member.id));
     localStorage.setItem(`yolo:${trip.code}:token`, member.token);
     router.push(`/trip/${trip.code}`);

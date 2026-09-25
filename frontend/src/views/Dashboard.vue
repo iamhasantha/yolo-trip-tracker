@@ -18,8 +18,8 @@
     </section>
     <div v-if="error" class="error-banner">{{ error }}</div>
     <div v-if="!myMemberId" class="guest-banner">
-      <span>You're viewing this trip as a guest. Join to add notes or make changes.</span>
-      <router-link :to="{ path: '/join', query: { code } }" class="button-link">Join this trip</router-link>
+      <span>You're viewing this trip as a guest. Join or sign in to make changes.</span>
+      <router-link :to="{ path: '/join', query: { code } }" class="button-link">Join or sign in</router-link>
     </div>
 
     <div v-if="completion" class="completion-card" :class="{ completed: completion.completed }">
@@ -43,7 +43,7 @@
           {{ voting ? "Submitting…" : "Vote to complete" }}
         </button>
         <button v-else-if="myMemberId" class="ghost" @click="withdrawVote" :disabled="voting">Withdraw vote</button>
-        <span v-else class="identity-note">Rejoin this trip with your name to vote.</span>
+        <span v-else class="identity-note">Sign in to vote.</span>
       </div>
     </div>
 
@@ -52,6 +52,7 @@
       <button class="tab" :class="{ active: tab === 'members' }" @click="tab = 'members'">Members</button>
       <button class="tab" :class="{ active: tab === 'contributions' }" @click="tab = 'contributions'">Contributions</button>
       <button class="tab" :class="{ active: tab === 'expenses' }" @click="tab = 'expenses'">Expenses</button>
+      <button class="tab" :class="{ active: tab === 'categories' }" @click="tab = 'categories'">Categories</button>
       <button class="tab" :class="{ active: tab === 'notes' }" @click="tab = 'notes'">Notes</button>
     </div>
 
@@ -59,6 +60,7 @@
     <MembersPanel v-if="tab === 'members'" :code="code" :locked="completion?.completed" :can-edit="!!myMemberId" @changed="bump" />
     <ContributionsPanel v-if="tab === 'contributions'" :code="code" :locked="completion?.completed" :can-edit="!!myMemberId" @changed="bump" />
     <ExpensesPanel v-if="tab === 'expenses'" :code="code" :locked="completion?.completed" :can-edit="!!myMemberId" @changed="bump" />
+    <CategoriesPanel v-if="tab === 'categories'" :code="code" :locked="completion?.completed" :can-edit="!!myMemberId" />
     <NotesPanel v-if="tab === 'notes'" :code="code" :locked="completion?.completed" :member-id="myMemberId" @changed="loadPriorityNotes" />
   </div>
   <div class="container" v-else-if="error">
@@ -75,6 +77,7 @@ import BreakdownPanel from "../components/BreakdownPanel.vue";
 import MembersPanel from "../components/MembersPanel.vue";
 import ContributionsPanel from "../components/ContributionsPanel.vue";
 import ExpensesPanel from "../components/ExpensesPanel.vue";
+import CategoriesPanel from "../components/CategoriesPanel.vue";
 import NotesPanel from "../components/NotesPanel.vue";
 import PrioritySlideshow from "../components/PrioritySlideshow.vue";
 
