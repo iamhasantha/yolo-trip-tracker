@@ -71,5 +71,19 @@ another browser/incognito tab and join as a different member to see it update.
 |-----------|----------------------|--------------------------------------------|
 | `PORT`    | `4000`               | API port                                   |
 | `DB_PATH` | `./yolo.db`          | Where the SQLite file lives — **point this at a persistent volume in production** |
+| `LOG_LEVEL` | `info`             | Structured JSON log level (`debug`, `info`, `warn`, or `error`) |
+| `METRICS_TOKEN` | unset          | Optional bearer or `X-Metrics-Token` value protecting `/api/metrics` |
+
+## Observability
+
+- Every request receives an `X-Request-ID`; callers may supply their own value to
+  correlate frontend, proxy, and backend logs.
+- HTTP and business audit logs are emitted as structured JSON. Authentication
+  headers, cookies, metrics tokens, and request bodies are not logged.
+- Prometheus metrics are exposed at `GET /api/metrics`, including request counts,
+  latency histograms, in-flight requests, domain mutations, completion votes,
+  report outcomes, report generation latency, process metrics, and trip status.
+- Set `METRICS_TOKEN` in production and scrape with either
+  `Authorization: Bearer <token>` or `X-Metrics-Token: <token>`.
 
 See `DEPLOYMENT.md` for hosting options at minimal/zero cost.

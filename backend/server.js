@@ -6,10 +6,25 @@ import { fileURLToPath } from "url";
 import { customAlphabet } from "nanoid";
 import { db } from "./db.js";
 import { createTripReport } from "./report.js";
+import {
+  audit,
+  completionVotesTotal,
+  domainEventsTotal,
+  logger,
+  metricsAuthorized,
+  metricsMiddleware,
+  refreshTripMetrics,
+  register,
+  reportDuration,
+  reportsTotal,
+  requestLogger,
+} from "./observability.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
-app.use(cors());
+app.use(cors({ exposedHeaders: ["X-Request-ID"] }));
+app.use(requestLogger);
+app.use(metricsMiddleware);
 app.use(express.json());
 
 // Unambiguous alphabet for the YOLO code (no 0/O/1/I)
@@ -110,6 +125,8 @@ app.post("/api/trips", (req, res) => {
 
   const memberInfo = db.prepare("INSERT INTO members (trip_id, name) VALUES (?, ?)").run(info.lastInsertRowid, creatorName.trim());
 
+  domainEventsTotal.inc({ entity: "trip", operation: "created" });
+  audit(req, "trip.created", { tripId: Number(info.lastInsertRowid), creatorMemberId: Number(memberInfo.lastInsertRowid) });
   res.status(201).json({ ...tripByCode(code), creatorMemberId: Number(memberInfo.lastInsertRowid) });
 });
 
@@ -128,11 +145,17 @@ app.post("/api/trips/:code/members", requireTrip, requireActiveTrip, (req, res) 
   const { name } = req.body;
   if (!name || !String(name).trim()) return res.status(400).json({ error: "A name is required." });
   const info = db.prepare("INSERT INTO members (trip_id, name) VALUES (?, ?)").run(req.trip.id, name.trim());
+  domainEventsTotal.inc({ entity: "member", operation: "added" });
+  audit(req, "member.added", { tripId: req.trip.id, memberId: Number(info.lastInsertRowid) });
   res.status(201).json(db.prepare("SELECT * FROM members WHERE id = ?").get(info.lastInsertRowid));
 });
 
 app.delete("/api/trips/:code/members/:id", requireTrip, requireActiveTrip, (req, res) => {
-  db.prepare("DELETE FROM members WHERE id = ? AND trip_id = ?").run(req.params.id, req.trip.id);
+  const result = db.prepare("DELETE FROM members WHERE id = ? AND trip_id = ?").run(req.params.id, req.trip.id);
+  if (result.changes) {
+    domainEventsTotal.inc({ entity: "member", operation: "removed" });
+    audit(req, "member.removed", { tripId: req.trip.id, memberId: Number(req.params.id) });
+  }
   res.status(204).end();
 });
 
@@ -159,11 +182,17 @@ app.post("/api/trips/:code/contributions", requireTrip, requireActiveTrip, (req,
     "INSERT INTO contributions (trip_id, member_id, amount, note) VALUES (?, ?, ?, ?)"
   ).run(req.trip.id, memberId, Number(amount), note || null);
 
+  domainEventsTotal.inc({ entity: "contribution", operation: "created" });
+  audit(req, "contribution.created", { tripId: req.trip.id, contributionId: Number(info.lastInsertRowid), memberId: Number(memberId) });
   res.status(201).json(db.prepare("SELECT * FROM contributions WHERE id = ?").get(info.lastInsertRowid));
 });
 
 app.delete("/api/trips/:code/contributions/:id", requireTrip, requireActiveTrip, (req, res) => {
-  db.prepare("DELETE FROM contributions WHERE id = ? AND trip_id = ?").run(req.params.id, req.trip.id);
+  const result = db.prepare("DELETE FROM contributions WHERE id = ? AND trip_id = ?").run(req.params.id, req.trip.id);
+  if (result.changes) {
+    domainEventsTotal.inc({ entity: "contribution", operation: "removed" });
+    audit(req, "contribution.removed", { tripId: req.trip.id, contributionId: Number(req.params.id) });
+  }
   res.status(204).end();
 });
 
@@ -191,11 +220,17 @@ app.post("/api/trips/:code/expenses", requireTrip, requireActiveTrip, (req, res)
     "INSERT INTO expenses (trip_id, paid_by, description, category, amount) VALUES (?, ?, ?, ?, ?)"
   ).run(req.trip.id, paidBy || null, description.trim(), category || "General", Number(amount));
 
+  domainEventsTotal.inc({ entity: "expense", operation: "created" });
+  audit(req, "expense.created", { tripId: req.trip.id, expenseId: Number(info.lastInsertRowid), paidByMemberId: paidBy ? Number(paidBy) : null });
   res.status(201).json(db.prepare("SELECT * FROM expenses WHERE id = ?").get(info.lastInsertRowid));
 });
 
 app.delete("/api/trips/:code/expenses/:id", requireTrip, requireActiveTrip, (req, res) => {
-  db.prepare("DELETE FROM expenses WHERE id = ? AND trip_id = ?").run(req.params.id, req.trip.id);
+  const result = db.prepare("DELETE FROM expenses WHERE id = ? AND trip_id = ?").run(req.params.id, req.trip.id);
+  if (result.changes) {
+    domainEventsTotal.inc({ entity: "expense", operation: "removed" });
+    audit(req, "expense.removed", { tripId: req.trip.id, expenseId: Number(req.params.id) });
+  }
   res.status(204).end();
 });
 
@@ -218,18 +253,32 @@ app.put("/api/trips/:code/completion/vote", requireTrip, requireActiveTrip, (req
   if (!member) return res.status(404).json({ error: "Choose a current trip member before voting." });
 
   const applyVote = db.transaction(() => {
+    let changed = false;
     if (vote) {
-      db.prepare("INSERT OR IGNORE INTO completion_votes (trip_id, member_id) VALUES (?, ?)").run(req.trip.id, memberId);
+      changed = Boolean(db.prepare("INSERT OR IGNORE INTO completion_votes (trip_id, member_id) VALUES (?, ?)").run(req.trip.id, memberId).changes);
     } else {
-      db.prepare("DELETE FROM completion_votes WHERE trip_id = ? AND member_id = ?").run(req.trip.id, memberId);
+      changed = Boolean(db.prepare("DELETE FROM completion_votes WHERE trip_id = ? AND member_id = ?").run(req.trip.id, memberId).changes);
     }
     const memberCount = db.prepare("SELECT COUNT(*) AS count FROM members WHERE trip_id = ?").get(req.trip.id).count;
     const yesVotes = db.prepare("SELECT COUNT(*) AS count FROM completion_votes WHERE trip_id = ?").get(req.trip.id).count;
-    if (memberCount > 0 && yesVotes >= Math.ceil(memberCount / 2)) {
-      db.prepare("UPDATE trips SET completed_at = datetime('now') WHERE id = ? AND completed_at IS NULL").run(req.trip.id);
-    }
+    const completed = memberCount > 0 && yesVotes >= Math.ceil(memberCount / 2);
+    if (completed) db.prepare("UPDATE trips SET completed_at = datetime('now') WHERE id = ? AND completed_at IS NULL").run(req.trip.id);
+    return { changed, memberCount, yesVotes, completed };
   });
-  applyVote();
+  const result = applyVote();
+  const action = vote ? "cast" : "withdrawn";
+  const voteResult = result.completed ? "completed" : result.changed ? "pending" : "unchanged";
+  completionVotesTotal.inc({ action, result: voteResult });
+  domainEventsTotal.inc({ entity: "completion_vote", operation: action });
+  if (result.completed) domainEventsTotal.inc({ entity: "trip", operation: "completed" });
+  audit(req, vote ? "completion_vote.cast" : "completion_vote.withdrawn", {
+    tripId: req.trip.id,
+    memberId,
+    changed: result.changed,
+    yesVotes: result.yesVotes,
+    requiredVotes: Math.ceil(result.memberCount / 2),
+    completed: result.completed,
+  });
   res.json(completionStatus(tripByCode(req.trip.code)));
 });
 
@@ -250,10 +299,48 @@ app.get("/api/trips/:code/report.pdf", requireTrip, (req, res) => {
   const filename = `${req.trip.code}-${req.trip.name.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase()}-report.pdf`;
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-  createTripReport({ trip: req.trip, members, contributions, expenses, summary: getSummary(req.trip), votes }).pipe(res);
+  const started = process.hrtime.bigint();
+  const report = createTripReport({ trip: req.trip, members, contributions, expenses, summary: getSummary(req.trip), votes });
+  report.once("error", (error) => {
+    req.log.error({ err: error, event: "report.failed", tripId: req.trip.id }, "report.failed");
+    if (!res.headersSent) res.status(500).json({ error: "The PDF report could not be generated.", requestId: req.id });
+    else res.destroy(error);
+  });
+  res.once("finish", () => {
+    const outcome = res.statusCode < 400 ? "success" : "error";
+    reportsTotal.inc({ outcome });
+    reportDuration.observe({ outcome }, Number(process.hrtime.bigint() - started) / 1e9);
+    audit(req, "report.downloaded", { tripId: req.trip.id, outcome });
+  });
+  report.pipe(res);
 });
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
+
+app.get("/api/metrics", (req, res) => {
+  if (!metricsAuthorized(req)) return res.status(401).json({ error: "Metrics authentication required." });
+  refreshTripMetrics(db);
+  res.setHeader("Content-Type", register.contentType);
+  register.metrics().then((metrics) => res.end(metrics)).catch((error) => {
+    req.log.error({ err: error, event: "metrics.failed" }, "metrics.failed");
+    res.status(500).json({ error: "Metrics could not be collected.", requestId: req.id });
+  });
+});
+
+app.use("/api", (req, res) => {
+  res.status(404).json({ error: "API route not found.", requestId: req.id });
+});
+
+app.use((error, req, res, _next) => {
+  const status = Number(error.status) >= 400 && Number(error.status) < 500 ? Number(error.status) : 500;
+  const log = status >= 500 ? req.log.error.bind(req.log) : req.log.warn.bind(req.log);
+  log({ err: error, event: "request.failed", statusCode: status }, "request.failed");
+  if (res.headersSent) return res.end();
+  res.status(status).json({
+    error: status === 400 ? "The request body is not valid JSON." : "An unexpected server error occurred.",
+    requestId: req.id,
+  });
+});
 
 // ---------- Serve the built frontend (single-process deployment) ----------
 // Run `npm run build` in ../frontend first. If frontend/dist doesn't exist,
@@ -263,8 +350,24 @@ const distDir = path.join(__dirname, "..", "frontend", "dist");
 if (fs.existsSync(distDir)) {
   app.use(express.static(distDir));
   app.get(/^(?!\/api).*/, (_req, res) => res.sendFile(path.join(distDir, "index.html")));
-  console.log("Serving frontend build from", distDir);
+  logger.info({ event: "frontend.enabled", distDir }, "frontend.enabled");
 }
 
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => console.log(`YOLO API listening on port ${PORT}`));
+const server = app.listen(PORT, () => logger.info({ event: "server.started", port: Number(PORT) }, "server.started"));
+server.on("error", (error) => logger.fatal({ err: error, event: "server.failed" }, "server.failed"));
+
+function shutdown(signal) {
+  logger.info({ event: "server.shutdown_started", signal }, "server.shutdown_started");
+  server.close((error) => {
+    if (error) {
+      logger.error({ err: error, event: "server.shutdown_failed" }, "server.shutdown_failed");
+      process.exitCode = 1;
+    } else {
+      logger.info({ event: "server.shutdown_completed" }, "server.shutdown_completed");
+    }
+  });
+}
+
+process.once("SIGTERM", () => shutdown("SIGTERM"));
+process.once("SIGINT", () => shutdown("SIGINT"));
