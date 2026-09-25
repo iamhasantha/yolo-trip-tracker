@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import path from "path";
 import fs from "fs";
+import { createHash, randomBytes } from "crypto";
 import { fileURLToPath } from "url";
 import { customAlphabet } from "nanoid";
 import { db } from "./db.js";
@@ -46,6 +47,27 @@ function requireActiveTrip(req, res, next) {
     return res.status(409).json({ error: "This trip is complete and its records are locked." });
   }
   next();
+}
+
+function requireMember(req, res, next) {
+  const token = req.get("Authorization")?.match(/^Bearer ([a-f0-9]{64})$/i)?.[1];
+  const member = token ? db.prepare(`
+    SELECT m.id, m.trip_id, m.name FROM member_sessions s
+    JOIN members m ON m.id = s.member_id
+    WHERE s.token_hash = ? AND m.trip_id = ?
+  `).get(createHash("sha256").update(token).digest("hex"), req.trip.id) : null;
+  if (!member) {
+    return res.status(403).json({ error: "Join this trip as a member before making changes." });
+  }
+  req.member = member;
+  next();
+}
+
+function issueMemberToken(memberId) {
+  const token = randomBytes(32).toString("hex");
+  db.prepare("INSERT INTO member_sessions (member_id, token_hash) VALUES (?, ?)")
+    .run(memberId, createHash("sha256").update(token).digest("hex"));
+  return token;
 }
 
 function completionStatus(trip) {
@@ -124,10 +146,11 @@ app.post("/api/trips", (req, res) => {
   const info = insertTrip.run(code, name.trim(), currency || "LKR", Number(targetAmount) || 0);
 
   const memberInfo = db.prepare("INSERT INTO members (trip_id, name) VALUES (?, ?)").run(info.lastInsertRowid, creatorName.trim());
+  const creatorToken = issueMemberToken(memberInfo.lastInsertRowid);
 
   domainEventsTotal.inc({ entity: "trip", operation: "created" });
   audit(req, "trip.created", { tripId: Number(info.lastInsertRowid), creatorMemberId: Number(memberInfo.lastInsertRowid) });
-  res.status(201).json({ ...tripByCode(code), creatorMemberId: Number(memberInfo.lastInsertRowid) });
+  res.status(201).json({ ...tripByCode(code), creatorMemberId: Number(memberInfo.lastInsertRowid), creatorToken });
 });
 
 app.get("/api/trips/:code", requireTrip, (req, res) => {
@@ -141,16 +164,25 @@ app.get("/api/trips/:code/members", requireTrip, (req, res) => {
   res.json(members);
 });
 
+app.get("/api/trips/:code/me", requireTrip, requireMember, (req, res) => {
+  res.json(req.member);
+});
+
 app.post("/api/trips/:code/members", requireTrip, requireActiveTrip, (req, res) => {
   const { name } = req.body;
   if (!name || !String(name).trim()) return res.status(400).json({ error: "A name is required." });
+  if (String(name).trim().length > 80) return res.status(400).json({ error: "Names can be up to 80 characters." });
+  const existing = db.prepare("SELECT id FROM members WHERE trip_id = ? AND name = ? COLLATE NOCASE")
+    .get(req.trip.id, String(name).trim());
+  if (existing) return res.status(409).json({ error: "That name is already on this trip. Use a different name or return on the device where you joined." });
   const info = db.prepare("INSERT INTO members (trip_id, name) VALUES (?, ?)").run(req.trip.id, name.trim());
+  const token = issueMemberToken(info.lastInsertRowid);
   domainEventsTotal.inc({ entity: "member", operation: "added" });
   audit(req, "member.added", { tripId: req.trip.id, memberId: Number(info.lastInsertRowid) });
-  res.status(201).json(db.prepare("SELECT * FROM members WHERE id = ?").get(info.lastInsertRowid));
+  res.status(201).json({ ...db.prepare("SELECT * FROM members WHERE id = ?").get(info.lastInsertRowid), token });
 });
 
-app.delete("/api/trips/:code/members/:id", requireTrip, requireActiveTrip, (req, res) => {
+app.delete("/api/trips/:code/members/:id", requireTrip, requireActiveTrip, requireMember, (req, res) => {
   const result = db.prepare("DELETE FROM members WHERE id = ? AND trip_id = ?").run(req.params.id, req.trip.id);
   if (result.changes) {
     domainEventsTotal.inc({ entity: "member", operation: "removed" });
@@ -170,7 +202,7 @@ app.get("/api/trips/:code/contributions", requireTrip, (req, res) => {
   res.json(rows);
 });
 
-app.post("/api/trips/:code/contributions", requireTrip, requireActiveTrip, (req, res) => {
+app.post("/api/trips/:code/contributions", requireTrip, requireActiveTrip, requireMember, (req, res) => {
   const { memberId, amount, note } = req.body;
   if (!memberId || !amount || Number(amount) <= 0) {
     return res.status(400).json({ error: "A member and a positive amount are required." });
@@ -187,7 +219,7 @@ app.post("/api/trips/:code/contributions", requireTrip, requireActiveTrip, (req,
   res.status(201).json(db.prepare("SELECT * FROM contributions WHERE id = ?").get(info.lastInsertRowid));
 });
 
-app.delete("/api/trips/:code/contributions/:id", requireTrip, requireActiveTrip, (req, res) => {
+app.delete("/api/trips/:code/contributions/:id", requireTrip, requireActiveTrip, requireMember, (req, res) => {
   const result = db.prepare("DELETE FROM contributions WHERE id = ? AND trip_id = ?").run(req.params.id, req.trip.id);
   if (result.changes) {
     domainEventsTotal.inc({ entity: "contribution", operation: "removed" });
@@ -207,7 +239,7 @@ app.get("/api/trips/:code/expenses", requireTrip, (req, res) => {
   res.json(rows);
 });
 
-app.post("/api/trips/:code/expenses", requireTrip, requireActiveTrip, (req, res) => {
+app.post("/api/trips/:code/expenses", requireTrip, requireActiveTrip, requireMember, (req, res) => {
   const { description, category, amount, paidBy } = req.body;
   if (!description || !amount || Number(amount) <= 0) {
     return res.status(400).json({ error: "A description and a positive amount are required." });
@@ -225,7 +257,7 @@ app.post("/api/trips/:code/expenses", requireTrip, requireActiveTrip, (req, res)
   res.status(201).json(db.prepare("SELECT * FROM expenses WHERE id = ?").get(info.lastInsertRowid));
 });
 
-app.delete("/api/trips/:code/expenses/:id", requireTrip, requireActiveTrip, (req, res) => {
+app.delete("/api/trips/:code/expenses/:id", requireTrip, requireActiveTrip, requireMember, (req, res) => {
   const result = db.prepare("DELETE FROM expenses WHERE id = ? AND trip_id = ?").run(req.params.id, req.trip.id);
   if (result.changes) {
     domainEventsTotal.inc({ entity: "expense", operation: "removed" });
@@ -240,15 +272,60 @@ app.get("/api/trips/:code/summary", requireTrip, (req, res) => {
   res.json(getSummary(req.trip));
 });
 
+// ---------- Shared notes ----------
+
+app.get("/api/trips/:code/notes", requireTrip, (req, res) => {
+  const notes = db.prepare(`
+    SELECT id, trip_id, author_member_id, author_name, content, is_priority, created_at
+    FROM notes WHERE trip_id = ? ORDER BY created_at DESC, id DESC
+  `).all(req.trip.id);
+  res.json(notes);
+});
+
+app.post("/api/trips/:code/notes", requireTrip, requireActiveTrip, requireMember, (req, res) => {
+  const content = String(req.body?.content || "").trim();
+  const isPriority = req.body?.priority === true ? 1 : 0;
+  if (!content) return res.status(400).json({ error: "Note text is required." });
+  if (content.length > 500) return res.status(400).json({ error: "Notes can be up to 500 characters." });
+
+  const info = db.prepare(`
+    INSERT INTO notes (trip_id, author_member_id, author_name, content, is_priority)
+    SELECT ?, ?, ?, ?, ?
+    WHERE ? = 0 OR (
+      SELECT COUNT(*) FROM notes WHERE trip_id = ? AND is_priority = 1
+    ) < 10
+  `).run(req.trip.id, req.member.id, req.member.name, content, isPriority, isPriority, req.trip.id);
+  if (!info.changes) return res.status(409).json({ error: "This trip already has 10 priority notes." });
+  domainEventsTotal.inc({ entity: "note", operation: "created" });
+  audit(req, "note.created", { tripId: req.trip.id, noteId: Number(info.lastInsertRowid), memberId: req.member.id, isPriority: Boolean(isPriority) });
+  res.status(201).json(db.prepare("SELECT * FROM notes WHERE id = ?").get(info.lastInsertRowid));
+});
+
+app.delete("/api/trips/:code/notes/:id", requireTrip, requireActiveTrip, requireMember, (req, res) => {
+  const note = db.prepare("SELECT author_member_id FROM notes WHERE id = ? AND trip_id = ?")
+    .get(req.params.id, req.trip.id);
+  if (!note) return res.status(404).json({ error: "Note not found." });
+  if (note.author_member_id !== req.member.id) {
+    return res.status(403).json({ error: "You can only remove your own notes." });
+  }
+  const result = db.prepare("DELETE FROM notes WHERE id = ? AND trip_id = ?").run(req.params.id, req.trip.id);
+  if (result.changes) {
+    domainEventsTotal.inc({ entity: "note", operation: "removed" });
+    audit(req, "note.removed", { tripId: req.trip.id, noteId: Number(req.params.id), memberId: req.member.id });
+  }
+  res.status(204).end();
+});
+
 // ---------- Completion voting and final report ----------
 
 app.get("/api/trips/:code/completion", requireTrip, (req, res) => {
   res.json(completionStatus(req.trip));
 });
 
-app.put("/api/trips/:code/completion/vote", requireTrip, requireActiveTrip, (req, res) => {
+app.put("/api/trips/:code/completion/vote", requireTrip, requireActiveTrip, requireMember, (req, res) => {
   const memberId = Number(req.body.memberId);
   const vote = req.body.vote !== false;
+  if (memberId !== req.member.id) return res.status(403).json({ error: "You can only submit your own completion vote." });
   const member = db.prepare("SELECT id FROM members WHERE id = ? AND trip_id = ?").get(memberId, req.trip.id);
   if (!member) return res.status(404).json({ error: "Choose a current trip member before voting." });
 

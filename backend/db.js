@@ -49,15 +49,31 @@ CREATE TABLE IF NOT EXISTS expenses (
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS notes (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  trip_id          INTEGER NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+  author_member_id INTEGER REFERENCES members(id) ON DELETE SET NULL,
+  author_name      TEXT NOT NULL,
+  content          TEXT NOT NULL,
+  is_priority      INTEGER NOT NULL DEFAULT 0,
+  created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_members_trip ON members(trip_id);
 CREATE INDEX IF NOT EXISTS idx_contrib_trip ON contributions(trip_id);
 CREATE INDEX IF NOT EXISTS idx_expense_trip ON expenses(trip_id);
+CREATE INDEX IF NOT EXISTS idx_notes_trip ON notes(trip_id);
 `);
 
 // Lightweight migrations for databases created by earlier versions.
 const tripColumns = new Set(db.prepare("PRAGMA table_info(trips)").all().map((column) => column.name));
 if (!tripColumns.has("completed_at")) {
   db.exec("ALTER TABLE trips ADD COLUMN completed_at TEXT");
+}
+
+const noteColumns = new Set(db.prepare("PRAGMA table_info(notes)").all().map((column) => column.name));
+if (!noteColumns.has("is_priority")) {
+  db.exec("ALTER TABLE notes ADD COLUMN is_priority INTEGER NOT NULL DEFAULT 0");
 }
 
 db.exec(`
@@ -69,4 +85,9 @@ CREATE TABLE IF NOT EXISTS completion_votes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_completion_votes_trip ON completion_votes(trip_id);
+
+CREATE TABLE IF NOT EXISTS member_sessions (
+  member_id  INTEGER PRIMARY KEY REFERENCES members(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE
+);
 `);
