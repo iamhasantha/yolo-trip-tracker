@@ -63,6 +63,121 @@ function requireMember(req, res, next) {
   next();
 }
 
+// Presence and WebRTC signaling are intentionally transient. Each browser tab has
+// its own peer ID, while the roster below groups tabs by signed-in member.
+const livePeers = new Map();
+const PEER_TTL = 45_000;
+const peerIdPattern = /^[a-f0-9-]{36}$/i;
+function tripPeers(tripId) {
+  let peers = livePeers.get(tripId);
+  if (!peers) livePeers.set(tripId, peers = new Map());
+  const now = Date.now();
+  for (const [id, peer] of peers) if (now - peer.seenAt > PEER_TTL) peers.delete(id);
+  return peers;
+}
+setInterval(() => {
+  for (const tripId of livePeers.keys()) {
+    if (!tripPeers(tripId).size) livePeers.delete(tripId);
+  }
+}, PEER_TTL).unref();
+
+app.post("/api/trips/:code/live", requireTrip, requireMember, (req, res) => {
+  const peerId = req.body?.peerId;
+  if (typeof peerId !== "string" || !peerIdPattern.test(peerId)) {
+    return res.status(400).json({ error: "A valid peer ID is required." });
+  }
+  const peers = tripPeers(req.trip.id);
+  const existing = peers.get(peerId);
+  if (existing && existing.memberId !== req.member.id) {
+    return res.status(409).json({ error: "That peer ID is already in use." });
+  }
+  peers.set(peerId, { memberId: req.member.id, name: req.member.name, seenAt: Date.now(), signals: existing?.signals || [] });
+  const active = [...peers].map(([id, peer]) => ({ peerId: id, memberId: peer.memberId, name: peer.name }));
+  const members = [...new Map(active.map((peer) => [peer.memberId, { id: peer.memberId, name: peer.name }])).values()];
+  res.json({ peers: active, members, signals: peers.get(peerId).signals.splice(0) });
+});
+
+app.get("/api/trips/:code/live", requireTrip, (req, res) => {
+  const members = [...new Map([...tripPeers(req.trip.id).values()]
+    .map((peer) => [peer.memberId, { id: peer.memberId, name: peer.name }])).values()];
+  res.json({ members });
+});
+
+app.post("/api/trips/:code/live/signal", requireTrip, requireMember, (req, res) => {
+  const { from, to, type, data } = req.body || {};
+  if (![from, to].every((id) => typeof id === "string" && peerIdPattern.test(id)) ||
+      !["offer", "answer", "candidate"].includes(type) ||
+      !data || typeof data !== "object" || Array.isArray(data) ||
+      JSON.stringify(data).length > 16_000) {
+    return res.status(400).json({ error: "Invalid WebRTC signal." });
+  }
+  const peers = tripPeers(req.trip.id);
+  if (peers.get(from)?.memberId !== req.member.id) return res.status(403).json({ error: "This peer is not yours." });
+  const recipient = peers.get(to);
+  if (!recipient || from === to) return res.status(404).json({ error: "That peer is offline." });
+  if (recipient.signals.length >= 100) return res.status(429).json({ error: "That peer has too many pending signals." });
+  recipient.signals.push({ from, type, data });
+  res.status(204).end();
+});
+
+app.delete("/api/trips/:code/live/:peerId", requireTrip, requireMember, (req, res) => {
+  const peers = tripPeers(req.trip.id);
+  if (peers.get(req.params.peerId)?.memberId === req.member.id) peers.delete(req.params.peerId);
+  res.status(204).end();
+});
+
+function chatMessage(id) {
+  return db.prepare(`
+    SELECT id, member_id AS memberId, author_name AS name,
+      content AS text, created_at AS at
+    FROM trip_messages WHERE id = ?
+  `).get(id);
+}
+
+app.get("/api/trips/:code/messages", requireTrip, requireMember, (req, res) => {
+  const after = req.query.after === undefined ? 0 : Number(req.query.after);
+  const before = req.query.before === undefined ? 0 : Number(req.query.before);
+  if (!Number.isSafeInteger(after) || after < 0 ||
+      !Number.isSafeInteger(before) || before < 0 ||
+      (after && before)) {
+    return res.status(400).json({ error: "Invalid message cursor." });
+  }
+  const rows = after
+    ? db.prepare(`
+        SELECT id, member_id AS memberId, author_name AS name,
+          content AS text, created_at AS at
+        FROM trip_messages WHERE trip_id = ? AND id > ? ORDER BY id LIMIT 100
+      `).all(req.trip.id, after)
+    : before
+      ? db.prepare(`
+        SELECT * FROM (
+          SELECT id, member_id AS memberId, author_name AS name,
+            content AS text, created_at AS at
+          FROM trip_messages WHERE trip_id = ? AND id < ? ORDER BY id DESC LIMIT 100
+        ) ORDER BY id
+      `).all(req.trip.id, before)
+    : db.prepare(`
+        SELECT * FROM (
+          SELECT id, member_id AS memberId, author_name AS name,
+            content AS text, created_at AS at
+          FROM trip_messages WHERE trip_id = ? ORDER BY id DESC LIMIT 100
+        ) ORDER BY id
+      `).all(req.trip.id);
+  res.json(rows);
+});
+
+app.post("/api/trips/:code/messages", requireTrip, requireActiveTrip, requireMember, (req, res) => {
+  const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
+  if (!text || text.length > 1000) {
+    return res.status(400).json({ error: "Write a message up to 1,000 characters." });
+  }
+  const info = db.prepare(`
+    INSERT INTO trip_messages (trip_id, member_id, author_name, content)
+    VALUES (?, ?, ?, ?)
+  `).run(req.trip.id, req.member.id, req.member.name, text);
+  res.status(201).json(chatMessage(info.lastInsertRowid));
+});
+
 function issueMemberToken(memberId) {
   const token = randomBytes(32).toString("hex");
   db.prepare("INSERT INTO member_sessions (member_id, token_hash) VALUES (?, ?)")
@@ -139,6 +254,57 @@ function completionStatus(trip) {
     voters: votes,
     reportUrl: trip.completed_at ? `/api/trips/${trip.code}/report.pdf` : null,
   };
+}
+
+function leadershipStatus(tripId, requesterId = null) {
+  const memberCount = db.prepare("SELECT COUNT(*) AS count FROM members WHERE trip_id = ?").get(tripId).count;
+  const leader = db.prepare(`
+    SELECT l.member_id, m.name, l.elected_at
+    FROM trip_leaders l JOIN members m ON m.id = l.member_id
+    WHERE l.trip_id = ? AND m.trip_id = ?
+  `).get(tripId, tripId) || null;
+  const candidates = db.prepare(`
+    SELECT c.member_id, m.name, c.requested_at, COUNT(v.voter_member_id) AS votes
+    FROM leadership_candidates c
+    JOIN members m ON m.id = c.member_id
+    LEFT JOIN leadership_votes v ON v.trip_id = c.trip_id AND v.candidate_member_id = c.member_id
+    WHERE c.trip_id = ?
+    GROUP BY c.trip_id, c.member_id
+    ORDER BY c.requested_at, c.member_id
+  `).all(tripId);
+  const myVoteCandidateId = requesterId
+    ? db.prepare("SELECT candidate_member_id FROM leadership_votes WHERE trip_id = ? AND voter_member_id = ?")
+      .get(tripId, requesterId)?.candidate_member_id ?? null
+    : null;
+  return {
+    leader,
+    candidates,
+    memberCount,
+    requiredVotes: Math.floor(memberCount / 2) + 1,
+    myVoteCandidateId,
+  };
+}
+
+function resolveMajorityLeader(tripId) {
+  const memberCount = db.prepare("SELECT COUNT(*) AS count FROM members WHERE trip_id = ?").get(tripId).count;
+  const requiredVotes = Math.floor(memberCount / 2) + 1;
+  const winner = db.prepare(`
+    SELECT c.member_id, m.name, COUNT(v.voter_member_id) AS votes
+    FROM leadership_candidates c
+    JOIN members m ON m.id = c.member_id
+    JOIN leadership_votes v ON v.trip_id = c.trip_id AND v.candidate_member_id = c.member_id
+    WHERE c.trip_id = ?
+    GROUP BY c.trip_id, c.member_id
+    HAVING COUNT(v.voter_member_id) >= ?
+    LIMIT 1
+  `).get(tripId, requiredVotes);
+  if (!winner) return null;
+  db.prepare(`
+    INSERT INTO trip_leaders (trip_id, member_id) VALUES (?, ?)
+    ON CONFLICT(trip_id) DO UPDATE SET member_id = excluded.member_id, elected_at = datetime('now')
+  `).run(tripId, winner.member_id);
+  db.prepare("DELETE FROM leadership_candidates WHERE trip_id = ?").run(tripId);
+  return { member_id: winner.member_id, name: winner.name };
 }
 
 function getSummary(trip) {
@@ -270,6 +436,59 @@ app.get("/api/trips/:code/members", requireTrip, (req, res) => {
   res.json(members);
 });
 
+app.get("/api/trips/:code/leadership", requireTrip, (req, res) => {
+  const token = req.get("Authorization")?.match(/^Bearer ([a-f0-9]{64})$/i)?.[1];
+  const viewer = token ? db.prepare(`
+    SELECT m.id FROM member_sessions s JOIN members m ON m.id = s.member_id
+    WHERE s.token_hash = ? AND m.trip_id = ?
+  `).get(createHash("sha256").update(token).digest("hex"), req.trip.id) : null;
+  res.json(leadershipStatus(req.trip.id, viewer?.id));
+});
+
+app.post("/api/trips/:code/leadership/candidacy", requireTrip, requireActiveTrip, requireMember, (req, res) => {
+  const result = db.prepare("INSERT OR IGNORE INTO leadership_candidates (trip_id, member_id) VALUES (?, ?)")
+    .run(req.trip.id, req.member.id);
+  if (!result.changes) return res.status(409).json({ error: "You have already asked to become the leader." });
+  audit(req, "leadership.candidacy_requested", { tripId: req.trip.id, memberId: req.member.id });
+  res.status(201).json(leadershipStatus(req.trip.id, req.member.id));
+});
+
+app.delete("/api/trips/:code/leadership/candidacy", requireTrip, requireActiveTrip, requireMember, (req, res) => {
+  const result = db.prepare("DELETE FROM leadership_candidates WHERE trip_id = ? AND member_id = ?")
+    .run(req.trip.id, req.member.id);
+  if (!result.changes) return res.status(404).json({ error: "You don't have an active leader request." });
+  audit(req, "leadership.candidacy_withdrawn", { tripId: req.trip.id, memberId: req.member.id });
+  res.json(leadershipStatus(req.trip.id, req.member.id));
+});
+
+app.put("/api/trips/:code/leadership/vote", requireTrip, requireActiveTrip, requireMember, (req, res) => {
+  const candidateId = Number(req.body?.candidateId);
+  if (!Number.isSafeInteger(candidateId) || candidateId <= 0) {
+    return res.status(400).json({ error: "Choose a valid leader candidate." });
+  }
+  const candidate = db.prepare(`
+    SELECT m.id, m.name FROM leadership_candidates c
+    JOIN members m ON m.id = c.member_id
+    WHERE c.trip_id = ? AND c.member_id = ? AND m.trip_id = ?
+  `).get(req.trip.id, candidateId, req.trip.id);
+  if (!candidate) return res.status(404).json({ error: "That member hasn't asked to become the leader." });
+
+  const elected = db.transaction(() => {
+    db.prepare(`
+      INSERT INTO leadership_votes (trip_id, voter_member_id, candidate_member_id)
+      VALUES (?, ?, ?)
+      ON CONFLICT(trip_id, voter_member_id) DO UPDATE SET
+        candidate_member_id = excluded.candidate_member_id,
+        created_at = datetime('now')
+    `).run(req.trip.id, req.member.id, candidateId);
+    return resolveMajorityLeader(req.trip.id);
+  })();
+
+  audit(req, "leadership.vote_cast", { tripId: req.trip.id, candidateMemberId: candidateId, voterMemberId: req.member.id });
+  if (elected) audit(req, "leadership.elected", { tripId: req.trip.id, leaderMemberId: elected.member_id });
+  res.json({ ...leadershipStatus(req.trip.id, req.member.id), elected });
+});
+
 app.get("/api/trips/:code/me", requireTrip, requireMember, (req, res) => {
   res.json(req.member);
 });
@@ -337,11 +556,28 @@ app.post("/api/trips/:code/members", requireTrip, requireActiveTrip, (req, res) 
   res.status(201).json({ ...db.prepare("SELECT * FROM members WHERE id = ?").get(joined.memberId), token: joined.token });
 });
 
+app.put("/api/trips/:code/members/:id/pin", requireTrip, requireActiveTrip, requireMember, (req, res) => {
+  const targetId = Number(req.params.id);
+  if (targetId === req.member.id) return res.status(400).json({ error: "Use Settings to change your own PIN." });
+  if (!validPin(req.body?.pin)) return res.status(400).json({ error: "Use a 4-digit member PIN." });
+  const leader = db.prepare("SELECT member_id FROM trip_leaders WHERE trip_id = ?").get(req.trip.id);
+  if (!leader || leader.member_id !== req.member.id) {
+    return res.status(403).json({ error: "Only the elected trip leader can reset another member's PIN." });
+  }
+  const target = db.prepare("SELECT id FROM members WHERE id = ? AND trip_id = ?").get(targetId, req.trip.id);
+  if (!target) return res.status(404).json({ error: "That member isn't part of this trip." });
+  saveMemberPin(target.id, req.body.pin);
+  audit(req, "member.pin_reset_by_member", { tripId: req.trip.id, memberId: target.id, resetByMemberId: req.member.id });
+  res.status(204).end();
+});
+
 app.delete("/api/trips/:code/members/:id", requireTrip, requireActiveTrip, requireMember, (req, res) => {
   const result = db.prepare("DELETE FROM members WHERE id = ? AND trip_id = ?").run(req.params.id, req.trip.id);
   if (result.changes) {
     domainEventsTotal.inc({ entity: "member", operation: "removed" });
     audit(req, "member.removed", { tripId: req.trip.id, memberId: Number(req.params.id) });
+    const elected = db.transaction(() => resolveMajorityLeader(req.trip.id))();
+    if (elected) audit(req, "leadership.elected", { tripId: req.trip.id, leaderMemberId: elected.member_id });
   }
   res.status(204).end();
 });

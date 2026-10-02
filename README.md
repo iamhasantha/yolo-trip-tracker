@@ -5,6 +5,17 @@ amount from each traveler; everyone joins with a **YOLO code** and a member
 PIN to log contributions, log expenses, share sticky notes, and see a
 live budget breakdown. Visitors with a code can read the trip without joining.
 
+The dashboard also shows signed-in members who currently have the trip open.
+Members can use the Chat tab to send messages that are saved in the trip database,
+so existing and offline members can read them later. When browsers establish a
+WebRTC data channel, they also deliver new messages directly for quicker display;
+the chat still works if that connection cannot be made. The API exchanges WebRTC
+signals and tracks presence in memory. Presence expires about 45 seconds after
+a browser stops checking in. WebRTC needs HTTPS or localhost, and some networks
+may need a TURN server for direct connections; the server-backed chat works
+without one. Completed trips keep chat history read-only. Use one backend
+process for presence and signaling, as in the single-process deployment below.
+
 Trips are completed by member vote. Each current member can vote once, and the
 trip is automatically locked when at least 50% of members have voted to finish.
 The completed dashboard provides a downloadable A4 PDF with totals, contribution
@@ -40,6 +51,28 @@ npm run dev
 
 Open http://localhost:5173 — create a trip, copy the YOLO code, open it in
 another browser/incognito tab and join as a different member to see it update.
+
+## Production checks
+
+Install dependencies and run the suite from the repository root:
+
+```bash
+npm --prefix backend ci
+npm --prefix frontend ci
+npm test
+```
+
+The test command builds the
+frontend, runs HTTP integration tests against a real backend with a temporary
+SQLite database, and runs a headless Chrome test of existing-member sign-in,
+online presence, WebRTC peer connection, chat, and the dashboard workflow. The
+suite checks trip creation, member access and
+PIN lockout, leadership, categories, contributions, expenses, notes, saved
+messages, WebRTC signaling, completion locking, PDF reports, metrics, and API
+errors. It never writes to `backend/yolo.db`.
+
+The browser test needs Chrome or Chromium; set `CHROME_BIN` if it is not on your `PATH`.
+Use `npm run test:api` or `npm run test:browser` to run one part of the suite.
 
 ## How the YOLO code works
 
@@ -78,6 +111,7 @@ another browser/incognito tab and join as a different member to see it update.
   priority flag that features them in the dashboard hero slideshow. Notes are
   limited to 500 characters, with at most 10 priority notes per trip.
 - `member_sessions` — hashed tokens for each signed-in browser
+- `trip_messages` — saved member chat messages for each trip
 - `member_pins` — salted PIN hashes and failed-attempt lockout state
 - `/api/trips/:code/summary` computes the whole breakdown server-side:
   total collected vs. target, total spent, balance, per-member paid/owed

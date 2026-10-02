@@ -1,7 +1,8 @@
 <template>
-  <div class="container" style="max-width:480px;">
+  <div class="container join-page">
+    <span class="section-eyebrow">Welcome aboard</span>
     <h2>{{ mode === "join" ? "Join a trip" : "Sign in to a trip" }}</h2>
-    <p>Use a YOLO code to view as a guest, join as a new member, or sign in as a member from another browser.</p>
+    <p>{{ mode === "join" ? "Create your member profile to join the crew." : "Welcome back. Use your trip code and member PIN to pick up where you left off." }}</p>
 
     <div class="access-mode" role="group" aria-label="Member access">
       <button type="button" :class="{ active: mode === 'join' }" @click="mode = 'join'">New member</button>
@@ -40,9 +41,9 @@ import { api } from "../api.js";
 const router = useRouter();
 const route = useRoute();
 const code = ref(String(route.query.code || ""));
-const name = ref("");
+const name = ref(localStorage.getItem(`yolo:${code.value.trim().toUpperCase()}:name`) || "");
 const pin = ref("");
-const mode = ref(route.query.mode === "login" ? "login" : "join");
+const mode = ref(route.query.mode === "login" || name.value ? "login" : "join");
 const loading = ref(false);
 const error = ref("");
 
@@ -61,6 +62,11 @@ async function submit() {
     router.push(`/trip/${trip.code}`);
   } catch (e) {
     error.value = e.message;
+    if (mode.value === "join" && /already on this trip/i.test(e.message)) {
+      mode.value = "login";
+      pin.value = "";
+      error.value = "You're already a member. Enter your existing PIN to sign in.";
+    }
   } finally {
     loading.value = false;
   }

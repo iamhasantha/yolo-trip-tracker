@@ -1,0 +1,10 @@
+{
+  "name": "yolo-trip-tracker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "npm --prefix frontend run build && node --test --test-concurrency=1 tests/api.test.mjs tests/browser.test.mjs",
+    "test:api": "node --test tests/api.test.mjs",
+    "test:browser": "npm --prefix frontend run build && node --test tests/browser.test.mjs"
+  }
+}

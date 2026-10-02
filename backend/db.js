@@ -31,6 +31,29 @@ CREATE TABLE IF NOT EXISTS members (
   joined_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS leadership_candidates (
+  trip_id     INTEGER NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+  member_id   INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+  requested_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (trip_id, member_id)
+);
+
+CREATE TABLE IF NOT EXISTS leadership_votes (
+  trip_id           INTEGER NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+  voter_member_id   INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+  candidate_member_id INTEGER NOT NULL,
+  created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (trip_id, voter_member_id),
+  FOREIGN KEY (trip_id, candidate_member_id)
+    REFERENCES leadership_candidates(trip_id, member_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS trip_leaders (
+  trip_id    INTEGER PRIMARY KEY REFERENCES trips(id) ON DELETE CASCADE,
+  member_id  INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+  elected_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS contributions (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   trip_id     INTEGER NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
@@ -69,6 +92,8 @@ CREATE TABLE IF NOT EXISTS notes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_members_trip ON members(trip_id);
+CREATE INDEX IF NOT EXISTS idx_leadership_candidates_trip ON leadership_candidates(trip_id);
+CREATE INDEX IF NOT EXISTS idx_leadership_votes_candidate ON leadership_votes(trip_id, candidate_member_id);
 CREATE INDEX IF NOT EXISTS idx_contrib_trip ON contributions(trip_id);
 CREATE INDEX IF NOT EXISTS idx_expense_trip ON expenses(trip_id);
 CREATE INDEX IF NOT EXISTS idx_categories_trip ON trip_categories(trip_id);
@@ -124,6 +149,17 @@ CREATE TABLE IF NOT EXISTS member_pins (
   failed_attempts INTEGER NOT NULL DEFAULT 0,
   locked_until    INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS trip_messages (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  trip_id    INTEGER NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+  member_id  INTEGER REFERENCES members(id) ON DELETE SET NULL,
+  author_name TEXT NOT NULL,
+  content    TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_trip_messages_trip_id ON trip_messages(trip_id, id);
 `);
 
 // Preserve tokens issued before members could sign in from multiple browsers.
