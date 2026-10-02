@@ -1,10 +1,11 @@
 <template>
-  <div class="container" v-if="trip">
+  <div class="container dashboard-page" v-if="trip">
     <section class="trip-hero">
       <div class="trip-hero-heading">
         <div>
-          <h2 style="margin-bottom:0.15em;">{{ trip.name }}</h2>
-          <p style="margin:0;">{{ trip.currency }} {{ formatMoney(trip.target_amount) }} per person · you're <strong>{{ myName || "a guest" }}</strong></p>
+          <span class="section-eyebrow">Trip workspace</span>
+          <h2>{{ trip.name }}</h2>
+          <p class="trip-hero-meta"><span>{{ trip.currency }} {{ formatMoney(trip.target_amount) }} per person</span><span class="meta-divider" aria-hidden="true">·</span><span>Viewing as <strong>{{ myName || "guest" }}</strong></span></p>
         </div>
         <button class="stamp-code" :class="{ copied: copyStatus === 'Copied!' }" type="button" :title="`Copy trip code ${trip.code}`" :aria-label="`Copy trip code ${trip.code}`" @click="copyTripCode">
           <span>{{ trip.code }}</span>
@@ -18,11 +19,11 @@
     </section>
     <div v-if="error" class="error-banner">{{ error }}</div>
     <div v-if="!myMemberId" class="guest-banner">
-      <span>You're viewing this trip as a guest. Join or sign in to make changes.</span>
-      <router-link :to="{ path: '/join', query: { code } }" class="button-link">Join or sign in</router-link>
+      <span>You're viewing as a guest. Sign in to chat and contribute.</span>
+      <div class="guest-actions"><router-link :to="{ path: '/join', query: { code, mode: 'login' } }" class="button-link">Sign in</router-link><router-link :to="{ path: '/join', query: { code } }" class="guest-join-link">New member</router-link></div>
     </div>
 
-    <div v-if="completion" class="completion-card" :class="{ completed: completion.completed }">
+    <div v-if="completion && tab === 'overview'" class="completion-card" :class="{ completed: completion.completed }">
       <div>
         <div class="completion-kicker">{{ completion.completed ? "Trip complete" : "Ready to wrap up?" }}</div>
         <h3>{{ completion.completed ? "Your final report is ready" : "Vote to complete this trip" }}</h3>
@@ -47,17 +48,20 @@
       </div>
     </div>
 
-    <div class="tabs">
-      <button class="tab" :class="{ active: tab === 'overview' }" @click="tab = 'overview'">Breakdown</button>
-      <button class="tab" :class="{ active: tab === 'members' }" @click="tab = 'members'">Members</button>
-      <button class="tab" :class="{ active: tab === 'contributions' }" @click="tab = 'contributions'">Contributions</button>
-      <button class="tab" :class="{ active: tab === 'expenses' }" @click="tab = 'expenses'">Expenses</button>
-      <button class="tab" :class="{ active: tab === 'categories' }" @click="tab = 'categories'">Categories</button>
-      <button class="tab" :class="{ active: tab === 'notes' }" @click="tab = 'notes'">Notes</button>
-    </div>
+    <nav class="tabs" aria-label="Trip sections">
+      <button class="tab" :class="{ active: tab === 'overview' }" :aria-pressed="tab === 'overview'" @click="tab = 'overview'">Breakdown</button>
+      <button class="tab" :class="{ active: tab === 'members' }" :aria-pressed="tab === 'members'" @click="tab = 'members'">Members</button>
+      <button class="tab" :class="{ active: tab === 'contributions' }" :aria-pressed="tab === 'contributions'" @click="tab = 'contributions'">Contributions</button>
+      <button class="tab" :class="{ active: tab === 'expenses' }" :aria-pressed="tab === 'expenses'" @click="tab = 'expenses'">Expenses</button>
+      <button class="tab" :class="{ active: tab === 'categories' }" :aria-pressed="tab === 'categories'" @click="tab = 'categories'">Categories</button>
+      <button class="tab" :class="{ active: tab === 'notes' }" :aria-pressed="tab === 'notes'" @click="tab = 'notes'">Notes</button>
+      <button class="tab chat-tab" :class="{ active: tab === 'chat' }" :aria-pressed="tab === 'chat'" @click="tab = 'chat'"><span aria-hidden="true">✦</span> Chat <span v-if="unreadCount" class="chat-unread">{{ unreadCount }}</span></button>
+    </nav>
+
+    <TripChat :code="code" :member-id="myMemberId" :active="tab === 'chat'" :locked="completion?.completed" @unread="unreadCount = $event" />
 
     <BreakdownPanel v-if="tab === 'overview'" :code="code" :refresh-key="refreshKey" />
-    <MembersPanel v-if="tab === 'members'" :code="code" :locked="completion?.completed" :can-edit="!!myMemberId" @changed="bump" />
+    <MembersPanel v-if="tab === 'members'" :code="code" :locked="completion?.completed" :can-edit="!!myMemberId" :member-id="myMemberId" @changed="bump" />
     <ContributionsPanel v-if="tab === 'contributions'" :code="code" :locked="completion?.completed" :can-edit="!!myMemberId" @changed="bump" />
     <ExpensesPanel v-if="tab === 'expenses'" :code="code" :locked="completion?.completed" :can-edit="!!myMemberId" @changed="bump" />
     <CategoriesPanel v-if="tab === 'categories'" :code="code" :locked="completion?.completed" :can-edit="!!myMemberId" />
@@ -80,13 +84,15 @@ import ExpensesPanel from "../components/ExpensesPanel.vue";
 import CategoriesPanel from "../components/CategoriesPanel.vue";
 import NotesPanel from "../components/NotesPanel.vue";
 import PrioritySlideshow from "../components/PrioritySlideshow.vue";
+import TripChat from "../components/TripChat.vue";
 
 const props = defineProps({ code: String });
 const route = useRoute();
 
 const trip = ref(null);
 const error = ref("");
-const tab = ref("overview");
+const tab = ref(route.query.tab === "chat" ? "chat" : "overview");
+const unreadCount = ref(0);
 const refreshKey = ref(0);
 const justCreated = ref(route.query.fresh === "1");
 const myName = ref("");
