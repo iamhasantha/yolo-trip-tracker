@@ -1,0 +1,12 @@
+{
+  "url": "http://127.0.0.1:4100/trip/ZWNPH5",
+  "code": "ZWNPH5",
+  "name": "Ella Weekend",
+  "demoMembers": [
+    "Alex",
+    "Maya",
+    "Kai",
+    "Zara"
+  ],
+  "alexPin": "2468"
+}

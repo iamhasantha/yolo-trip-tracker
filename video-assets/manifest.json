@@ -1,0 +1,62 @@
+[
+  {
+    "name": "01-landing",
+    "duration": 5.077908258,
+    "frames": 2
+  },
+  {
+    "name": "02-create-trip",
+    "duration": 10.924243934,
+    "frames": 52
+  },
+  {
+    "name": "03-share-code",
+    "duration": 5.152880298,
+    "frames": 48
+  },
+  {
+    "name": "04-join-the-squad",
+    "duration": 8.254559224999998,
+    "frames": 36
+  },
+  {
+    "name": "05-record-contribution",
+    "duration": 9.420388340999999,
+    "frames": 65
+  },
+  {
+    "name": "06-budget-overview",
+    "duration": 5.301781992999997,
+    "frames": 2
+  },
+  {
+    "name": "07-log-snack-run",
+    "duration": 10.557902257000002,
+    "frames": 95
+  },
+  {
+    "name": "08-spending-breakdown",
+    "duration": 5.463793989999991,
+    "frames": 1
+  },
+  {
+    "name": "09-trip-chat",
+    "duration": 8.605613738999994,
+    "frames": 52
+  },
+  {
+    "name": "10-sticky-notes",
+    "duration": 9.019065134999996,
+    "frames": 60
+  },
+  {
+    "name": "11-balance-in-pot",
+    "duration": 5.100566959000004,
+    "frames": 2
+  },
+  {
+    "name": "12-complete-trip",
+    "duration": 5.66017927600001,
+    "frames": 16
+  }
+]
