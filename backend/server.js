@@ -7,6 +7,8 @@ import { fileURLToPath } from "url";
 import { customAlphabet } from "nanoid";
 import { db, DEFAULT_CATEGORIES } from "./db.js";
 import { createTripReport } from "./report.js";
+import { listExpenses } from "./expenses.js";
+import { allocate, minorUnits } from "../shared/splits.js";
 import {
   audit,
   completionVotesTotal,
@@ -322,30 +324,49 @@ function getSummary(trip) {
   const contributed = db.prepare(
     "SELECT COALESCE(SUM(amount),0) AS total FROM contributions WHERE trip_id = ? AND member_id = ?"
   );
-  const spent = db.prepare(
-    "SELECT COALESCE(SUM(amount),0) AS total FROM expenses WHERE trip_id = ? AND paid_by = ?"
-  );
+  const expenses = listExpenses(trip.id);
+  const totalPotSpent = expenses.filter((e) => e.paymentSource === "pot").reduce((sum, e) => sum + e.amount, 0);
+  const round = (value) => Math.round(value * 100) / 100;
   const perMember = members.map((member) => {
     const memberContributed = contributed.get(trip.id, member.id).total;
-    const memberSpent = spent.get(trip.id, member.id).total;
+    const memberSpent = round(expenses.reduce((sum, e) => sum + (e.payers.find((p) => p.memberId === member.id)?.amount || 0), 0));
+    const expenseShare = round(expenses.reduce((sum, e) => sum + (e.shares.find((p) => p.memberId === member.id)?.amount || 0), 0));
+    const totalPaid = round(memberContributed + memberSpent);
     return {
       id: member.id,
       name: member.name,
       contributed: memberContributed,
       spent: memberSpent,
-      owed: Math.max(0, (trip.target_amount || 0) - memberContributed),
-      paidInFull: trip.target_amount ? memberContributed >= trip.target_amount : memberContributed > 0,
+      totalPaid,
+      expenseShare,
+      netBalance: round(totalPaid - expenseShare),
+      owed: round(Math.max(0, (trip.target_amount || 0) - totalPaid)),
+      paidInFull: trip.target_amount ? totalPaid >= trip.target_amount : totalPaid > 0,
     };
   });
+  const totalDirectPaid = round(perMember.reduce((sum, member) => sum + member.spent, 0));
+  const spendingByPayer = [
+    ...perMember.filter((member) => member.spent > 0).map((member) => ({
+      id: member.id, name: member.name, source: "member", total: member.spent,
+    })),
+    ...(totalPotSpent > 0 ? [{ id: null, name: "Common pot", source: "pot", total: round(totalPotSpent) }] : []),
+  ].sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
+  const largestExpenses = [...expenses].sort((a, b) => b.amount - a.amount || a.id - b.id).slice(0, 5)
+    .map((expense) => ({ id: expense.id, description: expense.description, category: expense.category, total: expense.amount }));
   return {
     trip,
     memberCount: members.length,
     targetTotal: (trip.target_amount || 0) * members.length,
     totalCollected,
+    totalDirectPaid,
+    totalPaid: round(totalCollected + totalDirectPaid),
     totalSpent,
-    balance: totalCollected - totalSpent,
+    totalPotSpent: round(totalPotSpent),
+    balance: round(totalCollected - totalPotSpent),
     byCategory,
     perMember,
+    spendingByPayer,
+    largestExpenses,
   };
 }
 
@@ -572,6 +593,10 @@ app.put("/api/trips/:code/members/:id/pin", requireTrip, requireActiveTrip, requ
 });
 
 app.delete("/api/trips/:code/members/:id", requireTrip, requireActiveTrip, requireMember, (req, res) => {
+  const memberId = Number(req.params.id);
+  if (listExpenses(req.trip.id).some((e) => [...e.payers, ...e.shares].some((p) => p.memberId === memberId))) {
+    return res.status(409).json({ error: "This member is included in expense splits. Remove those expenses before removing the member." });
+  }
   const result = db.prepare("DELETE FROM members WHERE id = ? AND trip_id = ?").run(req.params.id, req.trip.id);
   if (result.changes) {
     domainEventsTotal.inc({ entity: "member", operation: "removed" });
@@ -622,33 +647,42 @@ app.delete("/api/trips/:code/contributions/:id", requireTrip, requireActiveTrip,
 // ---------- Expenses ----------
 
 app.get("/api/trips/:code/expenses", requireTrip, (req, res) => {
-  const rows = db.prepare(`
-    SELECT e.*, m.name AS paid_by_name
-    FROM expenses e LEFT JOIN members m ON m.id = e.paid_by
-    WHERE e.trip_id = ? ORDER BY e.created_at DESC
-  `).all(req.trip.id);
-  res.json(rows);
+  res.json(listExpenses(req.trip.id));
 });
 
 app.post("/api/trips/:code/expenses", requireTrip, requireActiveTrip, requireMember, (req, res) => {
   const { description, category, amount, paidBy } = req.body;
-  if (!description || !amount || Number(amount) <= 0) {
+  if (typeof description !== "string" || !description.trim()) {
     return res.status(400).json({ error: "A description and a positive amount are required." });
   }
   const selectedCategory = db.prepare("SELECT name FROM trip_categories WHERE trip_id = ? AND name = ?")
     .get(req.trip.id, categoryName(category || "General"));
   if (!selectedCategory) return res.status(400).json({ error: "Choose a category from this trip." });
-  if (paidBy) {
-    const member = db.prepare("SELECT id FROM members WHERE id = ? AND trip_id = ?").get(paidBy, req.trip.id);
-    if (!member) return res.status(404).json({ error: "That member isn't part of this trip." });
+  const members = db.prepare("SELECT id, name FROM members WHERE trip_id = ? ORDER BY id").all(req.trip.id);
+  let allocations;
+  try {
+    if (!minorUnits(amount)) throw new Error("Enter a positive expense amount.");
+    const paymentSource = req.body.paymentSource ?? (paidBy ? "members" : "pot");
+    if (!["pot", "members"].includes(paymentSource)) throw new Error("Choose common pot or member payments.");
+    const payerMode = req.body.payerMode ?? "equal";
+    const shareMode = req.body.shareMode ?? "equal";
+    if (paymentSource === "pot" && req.body.payers?.length) throw new Error("Common-pot expenses cannot also have member payments.");
+    const payers = paymentSource === "members" ? allocate(amount, req.body.payers ?? (paidBy ? [{ memberId: paidBy }] : []), payerMode, members) : [];
+    const shares = allocate(amount, req.body.shares ?? members.map((m) => ({ memberId: m.id })), shareMode, members);
+    allocations = { paymentSource, payerMode, shareMode, payers, shares };
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
   }
   const info = db.prepare(
-    "INSERT INTO expenses (trip_id, paid_by, description, category, amount) VALUES (?, ?, ?, ?, ?)"
-  ).run(req.trip.id, paidBy || null, description.trim(), selectedCategory.name, Number(amount));
+    "INSERT INTO expenses (trip_id, paid_by, description, category, amount, allocations_json) VALUES (?, ?, ?, ?, ?, ?)"
+  ).run(req.trip.id, allocations.payers.length === 1 ? allocations.payers[0].memberId : null,
+    description.trim(), selectedCategory.name, Number(amount), JSON.stringify(allocations));
 
   domainEventsTotal.inc({ entity: "expense", operation: "created" });
-  audit(req, "expense.created", { tripId: req.trip.id, expenseId: Number(info.lastInsertRowid), paidByMemberId: paidBy ? Number(paidBy) : null });
-  res.status(201).json(db.prepare("SELECT * FROM expenses WHERE id = ?").get(info.lastInsertRowid));
+  audit(req, "expense.created", { tripId: req.trip.id, expenseId: Number(info.lastInsertRowid),
+    paymentSource: allocations.paymentSource, payerMemberIds: allocations.payers.map((p) => p.memberId),
+    shareMemberIds: allocations.shares.map((p) => p.memberId) });
+  res.status(201).json(listExpenses(req.trip.id).find((e) => e.id === Number(info.lastInsertRowid)));
 });
 
 app.delete("/api/trips/:code/expenses/:id", requireTrip, requireActiveTrip, requireMember, (req, res) => {
@@ -762,10 +796,7 @@ app.get("/api/trips/:code/report.pdf", requireTrip, (req, res) => {
     SELECT c.*, m.name AS member_name FROM contributions c
     JOIN members m ON m.id = c.member_id WHERE c.trip_id = ? ORDER BY c.created_at, c.id
   `).all(req.trip.id);
-  const expenses = db.prepare(`
-    SELECT e.*, m.name AS paid_by_name FROM expenses e
-    LEFT JOIN members m ON m.id = e.paid_by WHERE e.trip_id = ? ORDER BY e.created_at, e.id
-  `).all(req.trip.id);
+  const expenses = listExpenses(req.trip.id).reverse();
   const votes = completionStatus(req.trip).voters;
   const filename = `${req.trip.code}-${req.trip.name.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase()}-report.pdf`;
   res.setHeader("Content-Type", "application/pdf");

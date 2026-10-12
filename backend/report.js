@@ -59,14 +59,16 @@ export function createTripReport({ trip, members, contributions, expenses, summa
       return;
     }
     for (const row of rows) {
-      ensureSpace(34);
+      doc.font("Helvetica").fontSize(9);
+      const rowHeight = Math.max(25, doc.heightOfString(safeText(row[labelKey]), { width: 122 }) + 10);
+      ensureSpace(rowHeight + 9);
       const y = doc.y;
       const value = Number(row[valueKey]) || 0;
-      doc.fillColor(COLORS.ink).font("Helvetica").fontSize(9).text(safeText(row[labelKey]), 48, y, { width: 130, ellipsis: true });
+      doc.fillColor(COLORS.ink).font("Helvetica").fontSize(9).text(safeText(row[labelKey]), 48, y, { width: 122 });
       doc.roundedRect(180, y + 1, 235, 10, 3).fill(COLORS.paper);
       if (value > 0) doc.roundedRect(180, y + 1, Math.max(3, 235 * value / max), 10, 3).fill(color);
       doc.fillColor(COLORS.ink).font("Helvetica").fontSize(8.5).text(valueFormatter(value), 425, y, { width: 122, align: "right" });
-      doc.y = y + 25;
+      doc.y = y + rowHeight;
     }
   };
   const table = (columns, rows) => {
@@ -89,23 +91,24 @@ export function createTripReport({ trip, members, contributions, expenses, summa
       return;
     }
     rows.forEach((row, index) => {
-      if (doc.y + rowHeight > doc.page.height - 58) {
+      doc.font("Helvetica").fontSize(8);
+      const height = Math.max(rowHeight, ...columns.map((column) =>
+        doc.heightOfString(safeText(column.value(row)), { width: column.width - 10 }) + 14));
+      if (doc.y + height > doc.page.height - 58) {
         addPage();
         drawHeader();
       }
       const y = doc.y;
-      if (index % 2 === 0) doc.rect(48, y, pageWidth, rowHeight).fill(COLORS.paper);
+      if (index % 2 === 0) doc.rect(48, y, pageWidth, height).fill(COLORS.paper);
       let x = 48;
       for (const column of columns) {
         doc.fillColor(COLORS.ink).font("Helvetica").fontSize(8).text(safeText(column.value(row)), x + 5, y + 7, {
           width: column.width - 10,
           align: column.align || "left",
-          ellipsis: true,
-          lineBreak: false,
         });
         x += column.width;
       }
-      doc.y = y + rowHeight;
+      doc.y = y + height;
     });
   };
 
@@ -119,18 +122,32 @@ export function createTripReport({ trip, members, contributions, expenses, summa
   const gap = 10;
   const metricWidth = (pageWidth - gap) / 2;
   let metricY = doc.y;
-  metric(48, metricY, metricWidth, "Total contributed", money(trip.currency, summary.totalCollected), COLORS.green);
+  metric(48, metricY, metricWidth, "Total paid (pot + direct)", money(trip.currency, summary.totalPaid), COLORS.green);
   metric(48 + metricWidth + gap, metricY, metricWidth, "Total expenses", money(trip.currency, summary.totalSpent), COLORS.rust);
   metricY += 70;
-  metric(48, metricY, metricWidth, "Closing balance", money(trip.currency, summary.balance), summary.balance >= 0 ? COLORS.green : COLORS.rust);
+  metric(48, metricY, metricWidth, "Closing common-pot balance", money(trip.currency, summary.balance), summary.balance >= 0 ? COLORS.green : COLORS.rust);
   metric(48 + metricWidth + gap, metricY, metricWidth, "Completion vote", `${votes.length} of ${members.length} members`, COLORS.gold);
   doc.y = metricY + 62;
 
-  heading("Contributions by member");
-  barChart(summary.perMember, "contributed", "name", COLORS.green, (v) => money(trip.currency, v));
+  heading("Total paid by member");
+  doc.fillColor(COLORS.soft).font("Helvetica").fontSize(9).text(
+    `Includes ${money(trip.currency, summary.totalCollected)} paid into the pot and ${money(trip.currency, summary.totalDirectPaid)} paid directly for expenses. Both count toward contribution targets.`,
+    48, doc.y, { width: pageWidth });
+  doc.moveDown(0.5);
+  barChart([...summary.perMember].sort((a, b) => b.totalPaid - a.totalPaid), "totalPaid", "name", COLORS.green, (v) => money(trip.currency, v));
+
+  heading("Who paid most for expenses");
+  doc.fillColor(COLORS.soft).font("Helvetica").fontSize(9).text(
+    "Expense payments ranked highest first. Common-pot spending is shown separately from member payments.",
+    48, doc.y, { width: pageWidth });
+  doc.moveDown(0.5);
+  barChart(summary.spendingByPayer, "total", "name", COLORS.rust, (v) => money(trip.currency, v));
 
   heading("Expenses by category");
   barChart(summary.byCategory, "total", "category", COLORS.gold, (v) => money(trip.currency, v));
+
+  heading("Five largest expenses");
+  barChart(summary.largestExpenses, "total", "description", COLORS.rust, (v) => money(trip.currency, v));
 
   heading("Completion approval");
   doc.fillColor(COLORS.soft).font("Helvetica").fontSize(9).text(
@@ -143,16 +160,30 @@ export function createTripReport({ trip, members, contributions, expenses, summa
   doc.fillColor(COLORS.ink).font("Helvetica").text(votes.map((vote) => vote.member_name).join(", ") || "No voters recorded.", 48, doc.y, { width: pageWidth });
 
   ensureSpace(90);
-  heading("Member settlement breakdown");
+  heading("Contribution target progress");
   table([
-    { label: "MEMBER", width: 155, value: (r) => r.name },
-    { label: "CONTRIBUTED", width: 120, align: "right", value: (r) => money(trip.currency, r.contributed) },
-    { label: "PAID DIRECTLY", width: 120, align: "right", value: (r) => money(trip.currency, r.spent) },
-    { label: "TARGET SHORTFALL", width: 104, align: "right", value: (r) => money(trip.currency, r.owed) },
+    { label: "MEMBER", width: 159, value: (r) => r.name },
+    { label: "TOTAL PAID", width: 120, align: "right", value: (r) => money(trip.currency, r.totalPaid) },
+    { label: "TARGET REMAINING", width: 120, align: "right", value: (r) => trip.target_amount ? money(trip.currency, r.owed) : "No target set" },
+    { label: "STATUS", width: 100, value: (r) => trip.target_amount ? (r.paidInFull ? "Target met" : "Pending") : (r.totalPaid > 0 ? "Paid" : "No payments") },
   ], summary.perMember);
 
   ensureSpace(90);
-  heading("Contribution ledger");
+  heading("Member settlement breakdown");
+  doc.fillColor(COLORS.soft).font("Helvetica").fontSize(9).text(
+    "Net balance = contributions + direct payments - allocated expense share. Positive: money back. Negative: money due. Direct member payments do not reduce the common pot.",
+    48, doc.y, { width: pageWidth });
+  doc.moveDown(0.6);
+  table([
+    { label: "MEMBER", width: 119, value: (r) => r.name },
+    { label: "INTO POT", width: 95, align: "right", value: (r) => money(trip.currency, r.contributed) },
+    { label: "PAID DIRECTLY", width: 95, align: "right", value: (r) => money(trip.currency, r.spent) },
+    { label: "EXPENSE SHARE", width: 95, align: "right", value: (r) => money(trip.currency, r.expenseShare) },
+    { label: "NET BALANCE", width: 95, align: "right", value: (r) => money(trip.currency, r.netBalance) },
+  ], summary.perMember);
+
+  ensureSpace(90);
+  heading("Common-pot contribution ledger");
   table([
     { label: "DATE", width: 82, value: (r) => dateTime(r.created_at).split(",")[0] },
     { label: "MEMBER", width: 120, value: (r) => r.member_name },
@@ -165,9 +196,34 @@ export function createTripReport({ trip, members, contributions, expenses, summa
   table([
     { label: "DESCRIPTION", width: 160, value: (r) => r.description },
     { label: "CATEGORY", width: 90, value: (r) => r.category },
-    { label: "PAID BY", width: 129, value: (r) => r.paid_by_name || "Common pot" },
+    { label: "PAYMENT SOURCE", width: 129, value: (r) => r.paymentSource === "pot" ? "Common pot" : `${r.payers.length} member(s)` },
     { label: "AMOUNT", width: 120, align: "right", value: (r) => money(trip.currency, r.amount) },
   ], expenses);
+
+  heading("Expense payment and share details");
+  const modeLabel = (mode) => ({ equal: "Equal split", amounts: "Exact amounts", percentages: "Percentages" }[mode] || mode);
+  for (const expense of expenses) {
+    doc.font("Helvetica-Bold").fontSize(11);
+    const title = `${safeText(expense.description)} - ${money(trip.currency, expense.amount)}`;
+    ensureSpace(doc.heightOfString(title, { width: pageWidth }) + 95);
+    doc.fillColor(COLORS.ink).font("Helvetica-Bold").fontSize(11).text(title, 48, doc.y, { width: pageWidth });
+    doc.moveDown(0.4);
+    doc.fillColor(COLORS.soft).font("Helvetica").fontSize(9).text(
+      `Paid by: ${expense.paymentSource === "pot" ? "Common pot" : modeLabel(expense.payerMode)} | Shared: ${modeLabel(expense.shareMode)}`,
+      48, doc.y, { width: pageWidth });
+    doc.moveDown(0.4);
+    const rows = [
+      ...(expense.paymentSource === "pot" ? [{ name: "Common pot", role: "Paid", amount: expense.amount }] : expense.payers.map((p) => ({ ...p, role: "Paid" }))),
+      ...expense.shares.map((p) => ({ ...p, role: "Expense share" })),
+    ];
+    table([
+      { label: "MEMBER / SOURCE", width: 219, value: (r) => r.name },
+      { label: "ALLOCATION", width: 100, value: (r) => r.role },
+      { label: "PERCENT", width: 60, align: "right", value: (r) => r.percentage === undefined ? "-" : `${r.percentage}%` },
+      { label: "AMOUNT", width: 120, align: "right", value: (r) => money(trip.currency, r.amount) },
+    ], rows);
+    doc.moveDown(0.8);
+  }
 
   const pageCount = doc.bufferedPageRange().count;
   for (let index = 0; index < pageCount; index++) {

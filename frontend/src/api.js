@@ -67,7 +67,14 @@ export const api = {
   addNote: (code, data) => request(`/trips/${code}/notes`, memberOptions(code, { method: "POST", body: JSON.stringify(data) })),
   removeNote: (code, id) => request(`/trips/${code}/notes/${id}`, memberOptions(code, { method: "DELETE" })),
 
-  summary: (code) => request(`/trips/${code}/summary`),
+  summary: async (code) => {
+    const summary = await request(`/trips/${code}/summary`);
+    if (typeof summary.totalPaid !== "number" || !Array.isArray(summary.spendingByPayer) ||
+        summary.perMember.some((member) => typeof member.expenseShare !== "number")) {
+      throw new Error("Expense tracking needs the updated API server. Restart or redeploy the backend, then refresh this page.");
+    }
+    return summary;
+  },
   completion: (code) => request(`/trips/${code}/completion`),
   voteToComplete: (code, memberId, vote = true) => request(`/trips/${code}/completion/vote`, memberOptions(code, {
     method: "PUT",

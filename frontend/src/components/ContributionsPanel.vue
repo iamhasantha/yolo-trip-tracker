@@ -1,8 +1,9 @@
 <template>
   <div>
+    <ContributionProgress v-if="summary" :summary="summary" />
     <div v-if="canEdit && !locked" class="card" style="margin-bottom:1.4em;">
-      <h3>Record a contribution</h3>
-      <p>Log money as it comes in from each member.</p>
+      <h3>Record money paid into the pot</h3>
+      <p>Direct expense payments already count toward the target. Log only money deposited into the common pot here.</p>
       <div v-if="error" class="error-banner">{{ error }}</div>
       <form @submit.prevent="add">
         <div style="display:grid; grid-template-columns: 1.3fr 1fr; gap:14px;">
@@ -26,7 +27,8 @@
       </form>
     </div>
 
-    <div v-if="contributions.length === 0" class="empty-state">No contributions logged yet.</div>
+    <h3>Common-pot contribution ledger</h3>
+    <div v-if="contributions.length === 0" class="empty-state">No money deposited into the common pot yet.</div>
     <table v-else>
       <thead><tr><th>Member</th><th>Amount</th><th>Note</th><th>Date</th><th></th></tr></thead>
       <tbody>
@@ -45,12 +47,14 @@
 <script setup>
 import { ref, reactive, onMounted } from "vue";
 import { api } from "../api.js";
+import ContributionProgress from "./ContributionProgress.vue";
 
 const props = defineProps({ code: String, locked: Boolean, canEdit: Boolean });
 const emit = defineEmits(["changed"]);
 
 const members = ref([]);
 const contributions = ref([]);
+const summary = ref(null);
 const loading = ref(false);
 const error = ref("");
 const form = reactive({ memberId: "", amount: "", note: "" });
@@ -58,8 +62,10 @@ const form = reactive({ memberId: "", amount: "", note: "" });
 function formatDate(d) { return new Date(d + "Z").toLocaleDateString(); }
 
 async function load() {
-  members.value = await api.listMembers(props.code);
-  contributions.value = await api.listContributions(props.code);
+  const [memberList, contributionList, summaryData] = await Promise.all([api.listMembers(props.code), api.listContributions(props.code), api.summary(props.code)]);
+  members.value = memberList;
+  contributions.value = contributionList;
+  summary.value = summaryData;
 }
 
 async function add() {

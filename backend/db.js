@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import path from "path";
 import { fileURLToPath } from "url";
+import { allocate } from "../shared/splits.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -116,6 +117,29 @@ db.transaction(() => {
 const tripColumns = new Set(db.prepare("PRAGMA table_info(trips)").all().map((column) => column.name));
 if (!tripColumns.has("completed_at")) {
   db.exec("ALTER TABLE trips ADD COLUMN completed_at TEXT");
+}
+
+const expenseColumns = new Set(db.prepare("PRAGMA table_info(expenses)").all().map((column) => column.name));
+if (!expenseColumns.has("allocations_json")) {
+  db.transaction(() => {
+    db.exec("ALTER TABLE expenses ADD COLUMN allocations_json TEXT");
+    const save = db.prepare("UPDATE expenses SET allocations_json = ? WHERE id = ?");
+    for (const expense of db.prepare("SELECT * FROM expenses").all()) {
+      const members = db.prepare("SELECT id, name FROM members WHERE trip_id = ? ORDER BY id").all(expense.trip_id);
+      const payer = members.find((member) => member.id === expense.paid_by);
+      // Older API versions accepted extra decimal places; preserve their ledger
+      // amounts while recording allocations at the new two-decimal precision.
+      const roundedAmount = Math.round(expense.amount * 100) / 100;
+      const allocations = {
+        paymentSource: payer ? "members" : "pot", payerMode: "equal", shareMode: "equal",
+        payers: payer ? [{ memberId: payer.id, name: payer.name, amount: expense.amount }] : [],
+        shares: members.length ? (roundedAmount > 0
+          ? allocate(roundedAmount, members.map((m) => ({ memberId: m.id })), "equal", members)
+          : members.map((m) => ({ memberId: m.id, name: m.name, amount: 0 }))) : [],
+      };
+      save.run(JSON.stringify(allocations), expense.id);
+    }
+  })();
 }
 
 const noteColumns = new Set(db.prepare("PRAGMA table_info(notes)").all().map((column) => column.name));
