@@ -138,7 +138,10 @@ test("contributions, expenses, list views, and financial summary", async () => {
   assert.equal(summary.targetTotal, 200);
   assert.equal(summary.totalCollected, 150);
   assert.equal(summary.totalSpent, 30);
-  assert.equal(summary.balance, 120);
+  assert.equal(summary.balance, 150);
+  assert.equal(summary.totalDirectPaid, 30);
+  assert.equal(summary.totalPaid, 180);
+  assert.equal(summary.perMember.find((member) => member.id === trip.creatorMemberId).totalPaid, 130);
   assert.equal(summary.perMember.find((member) => member.id === ben.id).owed, 50);
   expect(await request(`${path}/expenses/${expense.id}`, { method: "DELETE", token: trip.creatorToken }), 204);
   expect(await request(`${path}/contributions/${benPaid.id}`, { method: "DELETE", token: ben.token }), 204);

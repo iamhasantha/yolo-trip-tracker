@@ -2,8 +2,9 @@
   <div v-if="s">
     <div class="stat-grid">
       <div class="stat">
-        <div class="label">Collected</div>
-        <div class="value positive mono">{{ s.trip.currency }} {{ fmt(s.totalCollected) }}</div>
+        <div class="label">Total paid</div>
+        <div class="value positive mono">{{ s.trip.currency }} {{ fmt(s.totalPaid) }}</div>
+        <small>Into pot {{ fmt(s.totalCollected) }} · Direct {{ fmt(s.totalDirectPaid) }}</small>
       </div>
       <div class="stat">
         <div class="label">Target ({{ s.memberCount }} members)</div>
@@ -11,7 +12,7 @@
       </div>
       <div class="stat">
         <div class="label">Spent</div>
-        <div class="value mono" :class="{ negative: s.totalSpent > s.totalCollected }">{{ s.trip.currency }} {{ fmt(s.totalSpent) }}</div>
+        <div class="value mono" :class="{ negative: s.totalSpent > s.totalPaid }">{{ s.trip.currency }} {{ fmt(s.totalSpent) }}</div>
       </div>
       <div class="stat">
         <div class="label">Balance in pot</div>
@@ -19,50 +20,34 @@
       </div>
     </div>
 
+    <ContributionProgress :summary="s" />
+
     <div class="card" style="margin-bottom:1.4em;">
-      <h3>Who's paid in</h3>
-      <div v-if="s.perMember.length === 0" class="empty-state">No members yet.</div>
-      <div v-for="m in s.perMember" :key="m.id" style="margin-bottom:0.9em;">
-        <div style="display:flex; justify-content:space-between; margin-bottom:0.3em; align-items:center;">
-          <span>{{ m.name }}</span>
-          <span>
-            <span class="mono" style="font-size:0.9rem;">{{ s.trip.currency }} {{ fmt(m.contributed) }}</span>
-            <span class="pill" :class="m.paidInFull ? 'paid' : 'unpaid'" style="margin-left:8px;">
-              {{ m.paidInFull ? "Paid" : "Owes " + fmt(m.owed) }}
-            </span>
-          </span>
-        </div>
-        <div class="bar-track">
-          <div class="bar-fill" :style="{ width: pct(m.contributed, s.trip.target_amount) + '%' }"></div>
-        </div>
+      <h3>Expense balances</h3>
+      <p>Net balance = contributions + paid directly − expense share. Positive means money back; negative means money due.</p>
+      <div class="settlement-scroll">
+        <table>
+          <thead><tr><th>Member</th><th>Paid directly</th><th>Expense share</th><th>Net balance</th></tr></thead>
+          <tbody><tr v-for="m in s.perMember" :key="m.id"><td>{{ m.name }}</td><td class="mono">{{ fmt(m.spent) }}</td><td class="mono">{{ fmt(m.expenseShare) }}</td><td class="mono" :style="{ color: m.netBalance < 0 ? 'var(--danger)' : 'var(--stamp-green-dark)' }">{{ fmt(m.netBalance) }}</td></tr></tbody>
+        </table>
       </div>
+      <small>Common-pot balance only deducts expenses paid from the pot. Member payments are counted separately.</small>
     </div>
 
-    <div class="card">
-      <h3>Spending by category</h3>
-      <div v-if="s.byCategory.length === 0" class="empty-state">No expenses logged yet.</div>
-      <div v-else class="bar-row" v-for="c in s.byCategory" :key="c.category">
-        <span style="color:var(--ink-soft); font-size:0.9rem;">{{ c.category }}</span>
-        <div class="bar-track">
-          <div class="bar-fill" :style="{ width: pct(c.total, maxCategory) + '%', background: 'var(--stamp-gold)' }"></div>
-        </div>
-        <span class="mono" style="text-align:right; font-size:0.9rem;">{{ fmt(c.total) }}</span>
-      </div>
-    </div>
+    <ExpenseSpendingChart :summary="s" />
   </div>
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted } from "vue";
+import { ref, watch, onMounted } from "vue";
 import { api } from "../api.js";
+import ContributionProgress from "./ContributionProgress.vue";
+import ExpenseSpendingChart from "./ExpenseSpendingChart.vue";
 
 const props = defineProps({ code: String, refreshKey: Number });
 const s = ref(null);
 
-const maxCategory = computed(() => Math.max(1, ...(s.value?.byCategory || []).map((c) => c.total)));
-
 function fmt(n) { return Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 0 }); }
-function pct(part, whole) { if (!whole) return part > 0 ? 100 : 0; return Math.min(100, (part / whole) * 100); }
 
 async function load() { s.value = await api.summary(props.code); }
 

@@ -170,10 +170,13 @@ async function add() {
 }
 
 async function remove(id) {
-  if (!confirm("Remove this member? Their contributions and expenses stay on record.")) return;
-  await api.removeMember(props.code, id);
-  await load();
-  emit("changed");
+  if (!confirm("Remove this member? Their contributions will also be removed. Members included in expenses must be kept.")) return;
+  error.value = "";
+  try {
+    await api.removeMember(props.code, id);
+    await load();
+    emit("changed");
+  } catch (e) { error.value = e.message; }
 }
 
 function togglePinReset(id) {

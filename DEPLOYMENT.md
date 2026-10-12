@@ -79,6 +79,7 @@ A minimal `Dockerfile` (add at the repo root):
 ```dockerfile
 FROM node:20-slim
 WORKDIR /app
+COPY shared ./shared
 COPY frontend ./frontend
 RUN cd frontend && npm install && npm run build
 COPY backend ./backend
@@ -100,7 +101,7 @@ rather not run a VM yourself.
 If you'd like the frontend on a CDN for free:
 - Deploy `frontend/dist` to **Cloudflare Pages** or **Netlify** (free tier,
   static hosting).
-- Deploy just `backend/` to **Railway** or **Fly.io** with a persistent
+- Deploy `backend/` together with its sibling `shared/` directory to **Railway** or **Fly.io** with a persistent
   volume for `yolo.db` (Railway's hobby plan is $5/month usage credit).
 - In `frontend/vite.config.js`, the dev proxy only applies locally — for a
   split deployment, change `src/api.js`'s `BASE` to your backend's public

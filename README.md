@@ -29,6 +29,7 @@ yolo-trip-tracker/
 │   ├── server.js
 │   ├── db.js       schema, auto-created on first run
 │   └── yolo.db      created at runtime (gitignored)
+├── shared/         Currency-safe expense split calculations
 └── frontend/       Vue 3 + Vite SPA
     └── src/
 ```
@@ -100,8 +101,9 @@ Use `npm run test:api` or `npm run test:browser` to run one part of the suite.
 - `trips` — name, currency, fixed target amount per person, YOLO code
 - `members` — display name, tied to a trip
 - `contributions` — money a member has paid into the pot
-- `expenses` — money spent from the pot, optionally attributed to whoever
-  paid for it, with a category
+- `expenses` — categorized spending paid from the common pot or by one or more
+  members. `allocations_json` stores the selected payers and beneficiaries,
+  their amounts, split methods, and entered percentages.
 - `trip_categories` — six starting categories plus custom categories per trip,
   capped at 20 total. Members can manage unused custom categories in the
   Categories tab; guests can view them. Existing expense categories are kept
@@ -115,7 +117,38 @@ Use `npm run test:api` or `npm run test:browser` to run one part of the suite.
 - `member_pins` — salted PIN hashes and failed-attempt lockout state
 - `/api/trips/:code/summary` computes the whole breakdown server-side:
   total collected vs. target, total spent, balance, per-member paid/owed
-  status, and spend by category — the frontend just renders it.
+  status, direct payments, expense shares, net balances, and spend by category.
+  Pot balance deducts only common-pot expenses; direct payments are tracked separately.
+
+## Expense splits
+
+In Expenses, choose **Common pot** or **One or more members**, then select the
+members under **Paid by** and **Split between**. Each group independently supports
+equal splits, exact amounts, or percentages. Exact amounts must total the expense;
+percentages must total 100%. Amounts support two decimal places, and rounding cents
+are distributed so the allocations always match the total.
+
+Member contribution progress counts money paid into the pot plus their direct
+expense payments. Each payer receives credit for their own payment allocation;
+beneficiaries do not receive contribution credit just for sharing an expense.
+Removing an expense also removes its direct-payment credit. Direct payments do
+not create pot deposits or duplicate contribution ledger entries.
+
+Expenses and Breakdown include a spending chart with views for who paid most,
+spending by category, and the five largest expenses. The final PDF includes all
+three charts and contribution target progress using the same calculations.
+
+Net balance is contributions plus direct payments minus allocated expense shares.
+A positive balance means money back; a negative balance means money due. The final
+PDF includes these balances and each expense's full payment and share details.
+
+Older expenses are migrated automatically: their original payer is retained, and
+their costs are shared equally among the members present at upgrade time. Member
+selections are saved with the expense, so later joins do not change past shares.
+Members included in expense allocations cannot be removed until those expenses
+are removed. Keep `shared/` alongside `backend/` when deploying the API.
+
+Run expense calculation and API regression checks with `npm test --prefix backend`.
 
 ## Environment variables (backend)
 
